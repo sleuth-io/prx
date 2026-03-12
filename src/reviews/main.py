@@ -1,68 +1,15 @@
+import argparse
+import asyncio
 import sys
-from datetime import datetime
 
 from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
-from reviews.assessor import assess_pr
-from reviews.config import Config, Weights, load_config
-from reviews.context import gather_context
-from reviews.github import PRInfo, detect_repo, fetch_prs
-from reviews.models import PRCard, RiskFactors, Verdict
-
-
-def compute_weighted_score(factors: RiskFactors, weights: Weights) -> float:
-    weighted_sum = (
-        factors.blast_radius.score * weights.blast_radius
-        + factors.test_coverage.score * weights.test_coverage
-        + factors.sensitivity.score * weights.sensitivity
-        + factors.complexity.score * weights.complexity
-        + factors.scope_focus.score * weights.scope_focus
-    )
-    total_weight = (
-        weights.blast_radius
-        + weights.test_coverage
-        + weights.sensitivity
-        + weights.complexity
-        + weights.scope_focus
-    )
-    return round(weighted_sum / total_weight, 1) if total_weight > 0 else 0.0
-
-
-def compute_verdict(score: float, config: Config) -> Verdict:
-    if score < config.thresholds.approve_below:
-        return Verdict.APPROVE
-    if score > config.thresholds.review_above:
-        return Verdict.REVIEW
-    return Verdict.REVIEW
-
-
-def build_pr_card(
-    *,
-    pr: PRInfo,
-    factors: RiskFactors,
-    risk_summary: str,
-    config: Config,
-    repo: str,
-) -> PRCard:
-    weighted_score = compute_weighted_score(factors, config.weights)
-    verdict = compute_verdict(weighted_score, config)
-    return PRCard(
-        repo=repo,
-        pr_number=pr.number,
-        title=pr.title,
-        author=pr.author,
-        url=pr.url,
-        created_at=datetime.fromisoformat(pr.created_at),
-        additions=pr.additions,
-        deletions=pr.deletions,
-        files_changed=pr.files_changed,
-        factors=factors,
-        weighted_score=weighted_score,
-        verdict=verdict,
-        risk_summary=risk_summary,
-    )
+from reviews.config import load_config
+from reviews.github import detect_repo
+from reviews.models import PRCard, Verdict
+from reviews.scoring import score_prs
 
 
 def render_score_bar(score: float) -> str:
@@ -118,7 +65,7 @@ def print_results(cards: list[PRCard], console: Console) -> None:
     console.print()
 
 
-def main() -> None:
+def cmd_triage(args: argparse.Namespace) -> None:
     console = Console()
 
     try:
@@ -128,7 +75,7 @@ def main() -> None:
         sys.exit(1)
 
     try:
-        repo = detect_repo()
+        repo = args.repo if args.repo else detect_repo()
     except Exception as e:
         console.print(f"[red]Error detecting repo:[/red] {e}")
         console.print("Run this command from inside a git repository.")
@@ -137,40 +84,74 @@ def main() -> None:
     console.print(f"[bold]Reviewing PRs for {repo}...[/bold]")
 
     try:
-        prs = fetch_prs(repo, config.review.max_diff_chars)
+        cards = asyncio.run(
+            score_prs(
+                repo,
+                config,
+                on_progress=lambda pr: console.print(
+                    f"  Scoring #{pr.number}: {pr.title}...", end=""
+                ),
+            )
+        )
     except Exception as e:
-        console.print(f"[red]Error fetching PRs:[/red] {e}")
+        console.print(f"[red]Error scoring PRs:[/red] {e}")
         sys.exit(1)
-
-    if not prs:
-        console.print("[yellow]No open PRs found.[/yellow]")
-        return
-
-    console.print(f"Found {len(prs)} open PR(s). Scoring...")
-
-    cards: list[PRCard] = []
-    for pr in prs:
-        try:
-            console.print(f"  Scoring #{pr.number}: {pr.title}...", end="")
-            codebase_context = gather_context(pr.diff)
-            factors, risk_summary = assess_pr(
-                pr=pr,
-                codebase_context=codebase_context,
-                config=config,
-            )
-            card = build_pr_card(
-                pr=pr,
-                factors=factors,
-                risk_summary=risk_summary,
-                config=config,
-                repo=repo,
-            )
-            cards.append(card)
-            console.print(" [green]done[/green]")
-        except Exception as e:
-            console.print(f" [red]error: {e}[/red]")
 
     if cards:
         print_results(cards, console)
     else:
-        console.print("[red]No PRs could be scored.[/red]")
+        console.print("[yellow]No open PRs found.[/yellow]")
+
+
+def cmd_serve(args: argparse.Namespace) -> None:
+    import uvicorn
+
+    from reviews.server import create_app
+
+    try:
+        config = load_config()
+    except (FileNotFoundError, ValueError) as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+
+    try:
+        repo = args.repo if args.repo else detect_repo()
+    except Exception as e:
+        print(f"Error detecting repo: {e}")
+        print("Provide a repo argument or run from inside a git repository.")
+        sys.exit(1)
+
+    repo_dir = args.repo_dir if args.repo_dir else "."
+    app = create_app(repo=repo, config=config, repo_dir=repo_dir)
+    print(f"Serving reviews for {repo} on http://localhost:{args.port}")
+    uvicorn.run(app, host="0.0.0.0", port=args.port)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="PR risk triage - score PRs by blast radius"
+    )
+    subparsers = parser.add_subparsers(dest="command")
+
+    triage_parser = subparsers.add_parser("triage", help="Score PRs in the terminal")
+    triage_parser.add_argument("repo", nargs="?", help="GitHub repo (owner/name)")
+
+    serve_parser = subparsers.add_parser("serve", help="Start the web UI server")
+    serve_parser.add_argument("repo", nargs="?", help="GitHub repo (owner/name)")
+    serve_parser.add_argument(
+        "--port", type=int, default=8000, help="Server port (default: 8000)"
+    )
+    serve_parser.add_argument(
+        "--repo-dir", default=None, help="Local repo directory for code exploration"
+    )
+
+    args = parser.parse_args()
+
+    if args.command == "serve":
+        cmd_serve(args)
+    elif args.command == "triage":
+        cmd_triage(args)
+    else:
+        # Default to triage for backward compatibility
+        args.repo = None
+        cmd_triage(args)

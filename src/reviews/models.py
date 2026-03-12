@@ -37,3 +37,7 @@ class PRCard(BaseModel):
     weighted_score: float
     verdict: Verdict
     risk_summary: str
+    review_notes: str = ""
+    diff: str = ""
+    checks_summary: str = ""
+    has_failing_checks: bool = False

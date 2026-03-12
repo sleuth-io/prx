@@ -1,4 +1,4 @@
-.PHONY: help format lint check-types prepush test run clean
+.PHONY: help format lint check-types prepush test run clean serve serve-bg dev-frontend dev-frontend-bg install-frontend build-frontend
 
 .DEFAULT_GOAL := help
 
@@ -26,6 +26,26 @@ test: ## Run tests
 
 run: ## Run reviews against the current repo
 	@uv run reviews
+
+serve: ## Start the web UI server (foreground)
+	@uv run reviews serve
+
+serve-bg: ## Start the web UI server in background (logs to /tmp/reviews-server.log)
+	@uv run reviews serve > /tmp/reviews-server.log 2>&1 &
+	@echo "Server started (PID $$!), logs at /tmp/reviews-server.log"
+
+install-frontend: ## Install frontend dependencies
+	@cd frontend && npm install
+
+build-frontend: ## Build frontend for production
+	@cd frontend && npm run build
+
+dev-frontend: ## Start Vite dev server (foreground)
+	@cd frontend && npm run dev
+
+dev-frontend-bg: ## Start Vite dev server in background (logs to /tmp/reviews-frontend.log)
+	@cd frontend && npm run dev > /tmp/reviews-frontend.log 2>&1 &
+	@echo "Frontend dev server started, logs at /tmp/reviews-frontend.log"
 
 clean: ## Clean build artifacts
 	@rm -rf dist/ .pytest_cache/ .ruff_cache/

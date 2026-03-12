@@ -1,0 +1,1 @@
+{"root":["./src/api.ts","./src/main.ts","./src/types.ts","./src/App.vue","./src/components/DetailDrawer.vue","./src/components/OptionsMenu.vue","./src/components/PRCard.vue","./src/components/ScoreBar.vue","./env.d.ts"],"version":"5.9.3"}
