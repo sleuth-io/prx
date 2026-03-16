@@ -1,52 +1,74 @@
-.PHONY: help format lint check-types prepush test run clean serve serve-bg dev-frontend dev-frontend-bg install-frontend build-frontend
+.PHONY: help build install test lint format clean prepush postpull
 
-.DEFAULT_GOAL := help
-
+# Default target
 help: ## Show this help message
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
+	@echo "Available targets:"
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-15s %s\n", $$1, $$2}'
 
-format: ## Format Python code
-	@echo "Formatting..."
-	@uv run ruff format
-	@uv run ruff check --fix src/
+# Build variables
+BINARY_NAME=reviews
+MAIN_PATH=./cmd/reviews
+BUILD_DIR=./dist
+VERSION?=$(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+COMMIT?=$(shell git rev-parse --short HEAD 2>/dev/null || echo "none")
+DATE?=$(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
+LDFLAGS=-ldflags "-X main.Version=$(VERSION) -X main.Commit=$(COMMIT) -X main.Date=$(DATE)"
 
-lint: ## Run linters
-	@echo "Linting..."
-	@uv run ruff check src/
+build: ## Build the binary
+	@echo "Building $(BINARY_NAME)..."
+	@go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) $(MAIN_PATH)
+	@echo "Built: $(BUILD_DIR)/$(BINARY_NAME)"
 
-check-types: ## Run type checking
-	@echo "Type checking..."
-	@uv run ty check src/
-
-prepush: format lint check-types ## Run before pushing (format, lint, typecheck)
+install: build ## Install binary to ~/.local/bin
+	@echo "Installing $(BINARY_NAME)..."
+	@mkdir -p $$HOME/.local/bin
+	@cp $(BUILD_DIR)/$(BINARY_NAME) $$HOME/.local/bin/
+	@echo "$(BINARY_NAME) installed to $$HOME/.local/bin/$(BINARY_NAME)"
 
 test: ## Run tests
 	@echo "Running tests..."
-	@uv run pytest
+	@OUTPUT=$$(go test -race -cover ./... 2>&1 | grep -v 'no such tool "covdata"'); \
+	RESULT=$$?; \
+	if echo "$$OUTPUT" | grep -q "^FAIL"; then \
+		echo "$$OUTPUT"; \
+		exit 1; \
+	else \
+		PASSED=$$(echo "$$OUTPUT" | grep -c "^ok"); \
+		echo "All $$PASSED packages passed"; \
+	fi
 
-run: ## Run reviews against the current repo
-	@uv run reviews
+lint: ## Run linters (requires golangci-lint)
+	@echo "Running linters..."
+	@GOBIN=$$(go env GOPATH)/bin; \
+	if command -v golangci-lint > /dev/null 2>&1; then \
+		golangci-lint run; \
+	elif [ -x "$$GOBIN/golangci-lint" ]; then \
+		"$$GOBIN/golangci-lint" run; \
+	else \
+		echo "golangci-lint not found. Run 'make postpull' to install." && exit 1; \
+	fi
 
-serve: ## Start the web UI server (foreground)
-	@uv run reviews serve
-
-serve-bg: ## Start the web UI server in background (logs to /tmp/reviews-server.log)
-	@uv run reviews serve > /tmp/reviews-server.log 2>&1 &
-	@echo "Server started (PID $$!), logs at /tmp/reviews-server.log"
-
-install-frontend: ## Install frontend dependencies
-	@cd frontend && npm install
-
-build-frontend: ## Build frontend for production
-	@cd frontend && npm run build
-
-dev-frontend: ## Start Vite dev server (foreground)
-	@cd frontend && npm run dev
-
-dev-frontend-bg: ## Start Vite dev server in background (logs to /tmp/reviews-frontend.log)
-	@cd frontend && npm run dev > /tmp/reviews-frontend.log 2>&1 &
-	@echo "Frontend dev server started, logs at /tmp/reviews-frontend.log"
+format: ## Format code
+	@echo "Formatting code..."
+	@gofmt -s -w .
+	@go mod tidy
 
 clean: ## Clean build artifacts
-	@rm -rf dist/ .pytest_cache/ .ruff_cache/
-	@find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+	@echo "Cleaning..."
+	@rm -rf $(BUILD_DIR)
+	@go clean
+
+run: build ## Build and run the binary
+	@$(BUILD_DIR)/$(BINARY_NAME)
+
+init: ## Initialize development environment
+	@echo "Initializing development environment..."
+	@echo "Installing golangci-lint..."
+	@curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b "$$(go env GOPATH)/bin" v2.8.0
+	@echo "Downloading dependencies..."
+	@go mod download
+	@echo "Development environment initialized"
+
+prepush: format lint test build ## Run before pushing (format, lint, test, build)
+
+postpull: init ## Run after pulling (install tools and download dependencies)
