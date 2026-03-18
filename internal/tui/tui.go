@@ -263,7 +263,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		pr := msg.pr
 		card := &PRCard{PR: pr, Scoring: true}
-		m.cards = append(m.cards, card)
+		// Insert sorted by PR number descending (newest first)
+		idx := 0
+		for idx < len(m.cards) && m.cards[idx].PR.Number > pr.Number {
+			idx++
+		}
+		m.cards = append(m.cards, nil)
+		copy(m.cards[idx+1:], m.cards[idx:])
+		m.cards[idx] = card
+		// Adjust current index if insertion was before it
+		if idx <= m.current && len(m.cards) > 1 {
+			m.current++
+		}
 		m.scoring++
 
 		if len(m.cards) == 1 {
@@ -276,6 +287,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for _, card := range m.cards {
 			if card.PR.Number == msg.prNumber {
 				card.parsedFiles = msg.files
+				applyHunkAnnotations(card)
 				break
 			}
 		}
@@ -295,6 +307,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					card.Assessment = msg.assessment
 					card.WeightedScore = scoring.WeightedScore(msg.assessment, m.app.Config.Criteria)
 					card.Verdict = scoring.ComputeVerdict(card.WeightedScore, m.app.Config.Thresholds)
+					applyHunkAnnotations(card)
 				}
 				src := "claude"
 				if msg.fromCache {
@@ -306,6 +319,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if card := m.currentCard(); card != nil && card.PR.Number == msg.prNumber {
 			m.rebuildAssessment()
+			// Refresh diff view if annotations were just applied
+			if card.parsedFiles != nil {
+				m.diffView.SetParsedContent(card.parsedFiles, card.PR)
+			}
 		}
 		return m, nil
 
@@ -766,7 +783,7 @@ func (m Model) renderTabBar(width int, diffActive, chatActive bool) string {
 
 	var hint string
 	if diffActive && m.focus == focusDiff {
-		hint = "\u2190 collapse  \u2192 expand  ] next file  [ prev  c comment  ? chat"
+		hint = "\u2190/\u2192 collapse/expand  ]/[ file  }/{ hunk  c comment  ? chat"
 	} else if chatActive && m.focus == focusChat {
 		hint = "enter send  alt+enter newline  esc stop/close"
 	}

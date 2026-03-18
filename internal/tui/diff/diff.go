@@ -37,6 +37,7 @@ type collapsibleKind int
 
 const (
 	kindFile         collapsibleKind = iota
+	kindHunk                         // individual hunk within a file
 	kindFilesGroup                   // header that wraps all diff files
 	kindCommentGroup                 // top-level comments grouped by author
 	kindComment                      // individual comment (inline, or expanded from group)
@@ -46,16 +47,27 @@ type collapsible struct {
 	lineIdx int
 	kind    collapsibleKind
 	fileIdx int
+	hunkIdx int
 	comment *CommentItem
 	group   *CommentGroup
+}
+
+// Hunk is a single diff hunk within a file.
+type Hunk struct {
+	HeaderLine    string
+	Rendered      []string
+	LineNums      []int
+	Collapsed     bool
+	Trivial       bool
+	TrivialReason string
+	StartLine     int // new-file line number from fragment header
 }
 
 // File is a parsed diff file with pre-rendered colored lines.
 type File struct {
 	Name      string
 	Collapsed bool
-	Rendered  []string
-	LineNums  []int // parallel to Rendered; -1 for hunk headers/deletions
+	Hunks     []*Hunk
 }
 
 // CommentItem is a single comment (inline or top-level).
@@ -172,6 +184,12 @@ func (d *DiffView) CollapseCurrentFile() {
 			d.files[c.fileIdx].Collapsed = true
 			d.rebuildAndStay(c)
 		}
+	case kindHunk:
+		h := d.files[c.fileIdx].Hunks[c.hunkIdx]
+		if !h.Collapsed {
+			h.Collapsed = true
+			d.rebuildAndStay(c)
+		}
 	case kindCommentGroup:
 		if !c.group.Collapsed {
 			c.group.Collapsed = true
@@ -202,6 +220,12 @@ func (d *DiffView) ExpandCurrentFile() {
 	case kindFile:
 		if d.files[c.fileIdx].Collapsed {
 			d.files[c.fileIdx].Collapsed = false
+			d.rebuildAndStay(c)
+		}
+	case kindHunk:
+		h := d.files[c.fileIdx].Hunks[c.hunkIdx]
+		if h.Collapsed {
+			h.Collapsed = false
 			d.rebuildAndStay(c)
 		}
 	case kindCommentGroup:
@@ -235,6 +259,28 @@ func (d *DiffView) PrevFile() {
 	for i := range d.collapsibles {
 		c := &d.collapsibles[i]
 		if c.kind == kindFile && c.lineIdx < d.cursorLine {
+			best = c
+		}
+	}
+	if best != nil {
+		d.MoveCursor(best.lineIdx - d.cursorLine)
+	}
+}
+
+func (d *DiffView) NextHunk() {
+	for _, c := range d.collapsibles {
+		if c.kind == kindHunk && c.lineIdx > d.cursorLine {
+			d.MoveCursor(c.lineIdx - d.cursorLine)
+			return
+		}
+	}
+}
+
+func (d *DiffView) PrevHunk() {
+	var best *collapsible
+	for i := range d.collapsibles {
+		c := &d.collapsibles[i]
+		if c.kind == kindHunk && c.lineIdx < d.cursorLine {
 			best = c
 		}
 	}
@@ -285,6 +331,12 @@ func (d DiffView) Update(msg tea.Msg) (DiffView, tea.Cmd) {
 			return d, nil
 		case "[", "F":
 			d.PrevFile()
+			return d, nil
+		case "}":
+			d.NextHunk()
+			return d, nil
+		case "{":
+			d.PrevHunk()
 			return d, nil
 		}
 	}
@@ -349,21 +401,30 @@ func (d *DiffView) RemoveComment(item *CommentItem) {
 // CurrentLineTarget returns the file path and new-file line number at the cursor.
 func (d *DiffView) CurrentLineTarget() (path string, line int) {
 	var fileCol *collapsible
+	var hunkCol *collapsible
 	for i := range d.collapsibles {
 		c := &d.collapsibles[i]
-		if c.kind == kindFile && c.lineIdx <= d.cursorLine {
+		if c.lineIdx > d.cursorLine {
+			break
+		}
+		if c.kind == kindFile {
 			fileCol = c
+			hunkCol = nil // reset hunk when we enter a new file
+		}
+		if c.kind == kindHunk {
+			hunkCol = c
 		}
 	}
-	if fileCol == nil {
+	if fileCol == nil || hunkCol == nil {
 		return "", 0
 	}
 	f := d.files[fileCol.fileIdx]
-	offset := d.cursorLine - fileCol.lineIdx - 1
-	if offset < 0 || offset >= len(f.LineNums) {
+	h := f.Hunks[hunkCol.hunkIdx]
+	offset := d.cursorLine - hunkCol.lineIdx - 1 // -1 for hunk header line
+	if offset < 0 || offset >= len(h.LineNums) {
 		return "", 0
 	}
-	ln := f.LineNums[offset]
+	ln := h.LineNums[offset]
 	if ln <= 0 {
 		return "", 0
 	}
@@ -380,7 +441,7 @@ func (d DiffView) View() string {
 	hint := " tab to focus"
 	if d.Focused {
 		titleStyle = style.PanelTitleFocused
-		hint = " \u2190 collapse  \u2192 expand  ] next file  [ prev file  c comment  tab to exit"
+		hint = " \u2190/\u2192 collapse/expand  ]/[ file  }/{ hunk  c comment  tab to exit"
 	}
 	width := d.width
 	if width == 0 {
@@ -396,7 +457,7 @@ func (d DiffView) ViewWithModal(modal string) string {
 	hint := " tab to focus"
 	if d.Focused {
 		titleStyle = style.PanelTitleFocused
-		hint = " \u2190 collapse  \u2192 expand  ] next file  [ prev file  c comment  tab to exit"
+		hint = " \u2190/\u2192 collapse/expand  ]/[ file  }/{ hunk  c comment  tab to exit"
 	}
 	width := d.width
 	if width == 0 {

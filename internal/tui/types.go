@@ -16,17 +16,18 @@ type SetProgramMsg struct {
 
 // PRCard is a PR — may be in-progress (Scoring=true) or fully assessed.
 type PRCard struct {
-	PR            *github.PR
-	Assessment    *ai.Assessment
-	WeightedScore float64
-	Verdict       string
-	Scoring       bool
-	ScoringErr    error
-	parsedFiles   []*diff.File     // pre-parsed diff files (nil until ready)
-	chatMessages  []chat.Message   // in-memory chat history per PR
-	chatContext   *ai.DiffContext   // file/line the reviewer was looking at when chat opened
-	chatCancel    func()            // cancels the running claude process (nil if not streaming)
-	worktreePath  string            // git worktree path for chat (empty until created)
+	PR                 *github.PR
+	Assessment         *ai.Assessment
+	WeightedScore      float64
+	Verdict            string
+	Scoring            bool
+	ScoringErr         error
+	parsedFiles        []*diff.File     // pre-parsed diff files (nil until ready)
+	annotationsApplied bool             // true once hunk annotations have been applied
+	chatMessages       []chat.Message   // in-memory chat history per PR
+	chatContext        *ai.DiffContext  // file/line the reviewer was looking at when chat opened
+	chatCancel         func()           // cancels the running claude process (nil if not streaming)
+	worktreePath       string           // git worktree path for chat (empty until created)
 }
 
 type prDiffParsedMsg struct {

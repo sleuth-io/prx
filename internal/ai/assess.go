@@ -16,10 +16,18 @@ type FactorScore struct {
 	Reason string `json:"reason"`
 }
 
+type HunkAnnotation struct {
+	File      string `json:"file"`
+	StartLine int    `json:"start_line"`
+	Trivial   bool   `json:"trivial"`
+	Reason    string `json:"reason"`
+}
+
 type Assessment struct {
-	Factors     map[string]FactorScore `json:"factors"`
-	RiskSummary string                 `json:"risk_summary"`
-	ReviewNotes string                 `json:"review_notes"`
+	Factors         map[string]FactorScore `json:"factors"`
+	RiskSummary     string                 `json:"risk_summary"`
+	ReviewNotes     string                 `json:"review_notes"`
+	HunkAnnotations []HunkAnnotation       `json:"hunk_annotations,omitempty"`
 }
 
 func buildSystemPrompt(criteria []config.Criterion) string {
@@ -68,8 +76,17 @@ Respond with ONLY a JSON object in this exact format:
 
 	sb.WriteString(`  },
   "risk_summary": "<one sentence, max 80 chars>",
-  "review_notes": "- <what the PR does>\n- <key concern 1>\n- <key concern 2>"
-}`)
+  "review_notes": "- <what the PR does>\n- <key concern 1>\n- <key concern 2>",
+  "hunk_annotations": [
+    {"file": "<path>", "start_line": <new-file line number from hunk header>, "trivial": <true|false>, "reason": "<why trivial or not, max 40 chars>"}
+  ]
+}
+
+For hunk_annotations: examine each hunk (@@-delimited section) in the diff. For each hunk,
+taking all the above criteria into account, determine whether a senior reviewer needs to read
+it to make their approval decision. A hunk is trivial if it scores low across all criteria —
+e.g. import changes, mechanical renames, boilerplate, auto-generated code. Include ALL hunks.
+The start_line is the new-file line number from the hunk header (the + number in @@ -x,y +Z,w @@).`)
 
 	return sb.String()
 }

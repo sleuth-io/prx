@@ -23,8 +23,11 @@ func ParseDiff(raw string) []*File {
 	}
 	if len(files) == 0 {
 		return []*File{{
-			Name:     "diff",
-			Rendered: colorRawDiff(raw),
+			Name: "diff",
+			Hunks: []*Hunk{{
+				HeaderLine: diffHunkStyle.Render("  raw diff"),
+				Rendered:   colorRawDiff(raw),
+			}},
 		}}
 	}
 
@@ -34,36 +37,40 @@ func ParseDiff(raw string) []*File {
 		if name == "" || name == "/dev/null" {
 			name = f.OldName
 		}
-		rendered, lineNums := renderFileDiff(f)
+		hunks := renderFileDiff(f)
 		result = append(result, &File{
-			Name:     name,
-			Rendered: rendered,
-			LineNums: lineNums,
+			Name:  name,
+			Hunks: hunks,
 		})
 	}
 	return result
 }
 
-func renderFileDiff(f *gitdiff.File) ([]string, []int) {
+func renderFileDiff(f *gitdiff.File) []*Hunk {
 	lexer := detectLexer(f.NewName, f.OldName)
-	var lines []string
-	var lineNums []int
+	var hunks []*Hunk
 
 	for _, frag := range f.TextFragments {
 		comment := strings.TrimSpace(frag.Comment)
-		var hunkHeader string
-		if comment != "" {
-			hunkHeader = fmt.Sprintf("  %s (line %d)", comment, frag.NewPosition)
-		} else {
-			hunkHeader = fmt.Sprintf("  line %d", frag.NewPosition)
+		linePos := frag.NewPosition
+		if linePos == 0 {
+			linePos = frag.OldPosition
 		}
-		lines = append(lines, diffHunkStyle.Render(hunkHeader))
-		lineNums = append(lineNums, -1)
-		fl, fn := renderFragmentLines(frag.Lines, lexer, int(frag.NewPosition))
-		lines = append(lines, fl...)
-		lineNums = append(lineNums, fn...)
+		_ = comment
+		hunkHeader := fmt.Sprintf("  line %d", linePos)
+		startLine := int(frag.NewPosition)
+		if startLine == 0 {
+			startLine = int(frag.OldPosition)
+		}
+		rendered, lineNums := renderFragmentLines(frag.Lines, lexer, int(frag.NewPosition))
+		hunks = append(hunks, &Hunk{
+			HeaderLine: hunkHeader,
+			Rendered:   rendered,
+			LineNums:   lineNums,
+			StartLine:  startLine,
+		})
 	}
-	return lines, lineNums
+	return hunks
 }
 
 // renderFragmentLines renders diff lines, pairing equal-count remove/add runs for inline diff.
