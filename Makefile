@@ -1,14 +1,18 @@
-.PHONY: help run build install test lint format clean prepush postpull
+.PHONY: help run build install test lint format clean release prepush postpull
 
 BINARY_NAME=prx
 MAIN_PATH=./cmd/prx
 BUILD_DIR=./dist
+VERSION?=$(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+COMMIT?=$(shell git rev-parse --short HEAD 2>/dev/null || echo "none")
+DATE?=$(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
+LDFLAGS=-ldflags "-X github.com/sleuth-io/prx/internal/buildinfo.Version=$(VERSION) -X github.com/sleuth-io/prx/internal/buildinfo.Commit=$(COMMIT) -X github.com/sleuth-io/prx/internal/buildinfo.Date=$(DATE)"
 
 help: ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-15s %s\n", $$1, $$2}'
 
 build: ## Build the binary
-	@go build -o $(BUILD_DIR)/$(BINARY_NAME) $(MAIN_PATH)
+	@go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) $(MAIN_PATH)
 
 run: build ## Build and run
 	@$(BUILD_DIR)/$(BINARY_NAME)
@@ -31,9 +35,12 @@ format: ## Format code
 clean: ## Clean build artifacts
 	@rm -rf $(BUILD_DIR)
 
+release: ## Create release with goreleaser
+	@goreleaser release --clean
+
 init: ## Install dependencies
 	@go mod tidy
 
-prepush: format test build ## Run before pushing
+prepush: format lint test build ## Run before pushing
 
 postpull: init ## Run after pulling
