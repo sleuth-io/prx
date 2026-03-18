@@ -140,7 +140,7 @@ func ListOpenPRsMeta(repo string) ([]map[string]any, error) {
 }
 
 // FetchPRDetails fetches the diff, checks, and reviews for a single PR.
-func FetchPRDetails(repo string, raw map[string]any, maxDiffChars int) (*PR, error) {
+func FetchPRDetails(repo string, raw map[string]any) (*PR, error) {
 	num := int(raw["number"].(float64))
 	logger.Info("fetching details for PR #%d", num)
 
@@ -153,7 +153,7 @@ func FetchPRDetails(repo string, raw map[string]any, maxDiffChars int) (*PR, err
 		comments       []ReviewComment
 	)
 	wg.Add(5)
-	go func() { defer wg.Done(); diff, _ = getDiff(repo, num, maxDiffChars) }()
+	go func() { defer wg.Done(); diff, _ = getDiff(repo, num) }()
 	go func() { defer wg.Done(); checks, _ = getChecks(repo, num) }()
 	go func() { defer wg.Done(); reviews, _ = getReviews(repo, num) }()
 	go func() { defer wg.Done(); inlineComments, _ = getInlineComments(repo, num) }()
@@ -203,16 +203,12 @@ func FetchPRDetails(repo string, raw map[string]any, maxDiffChars int) (*PR, err
 	}, nil
 }
 
-func getDiff(repo string, number, maxChars int) (string, error) {
+func getDiff(repo string, number int) (string, error) {
 	out, err := exec.Command("gh", "pr", "diff", fmt.Sprintf("%d", number), "--repo", repo).Output()
 	if err != nil {
 		return "", fmt.Errorf("gh pr diff: %w", err)
 	}
-	diff := string(out)
-	if len(diff) > maxChars {
-		diff = diff[:maxChars] + "\n... [diff truncated]"
-	}
-	return diff, nil
+	return string(out), nil
 }
 
 func getChecks(repo string, number int) ([]CheckStatus, error) {

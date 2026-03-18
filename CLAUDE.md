@@ -78,6 +78,8 @@ review_above = 3.5
 
 ## Build & run
 
+Always use `make` targets, never raw `go` commands directly.
+
 ```bash
 make build    # go build ./...
 make run      # go run ./cmd/prx [path]
