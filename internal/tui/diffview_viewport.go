@@ -10,6 +10,11 @@ import (
 func (d *DiffView) rebuildAndStay(c *collapsible) {
 	d.rebuildViewport()
 	d.cursorLine = d.collapsibleLineIdx(c)
+	idealOffset := d.cursorLine - d.viewport.Height/2
+	if idealOffset < 0 {
+		idealOffset = 0
+	}
+	d.viewport.SetYOffset(idealOffset)
 	d.syncViewport()
 }
 
