@@ -1,4 +1,4 @@
-package tui
+package diff
 
 import (
 	"fmt"
@@ -15,30 +15,30 @@ import (
 
 var dmp = diffmatchpatch.New()
 
-// parseDiff parses a unified diff string into per-file colored lines.
-func parseDiff(raw string) []*diffFile {
+// ParseDiff parses a unified diff string into per-file colored lines.
+func ParseDiff(raw string) []*File {
 	files, _, err := gitdiff.Parse(strings.NewReader(raw))
 	if err != nil {
 		logger.Debug("parseDiff: raw_len=%d files=%d err=%v", len(raw), len(files), err)
 	}
 	if len(files) == 0 {
-		return []*diffFile{{
-			name:     "diff",
-			rendered: colorRawDiff(raw),
+		return []*File{{
+			Name:     "diff",
+			Rendered: colorRawDiff(raw),
 		}}
 	}
 
-	result := make([]*diffFile, 0, len(files))
+	result := make([]*File, 0, len(files))
 	for _, f := range files {
 		name := f.NewName
 		if name == "" || name == "/dev/null" {
 			name = f.OldName
 		}
 		rendered, lineNums := renderFileDiff(f)
-		result = append(result, &diffFile{
-			name:     name,
-			rendered: rendered,
-			lineNums: lineNums,
+		result = append(result, &File{
+			Name:     name,
+			Rendered: rendered,
+			LineNums: lineNums,
 		})
 	}
 	return result
@@ -67,8 +67,6 @@ func renderFileDiff(f *gitdiff.File) ([]string, []int) {
 }
 
 // renderFragmentLines renders diff lines, pairing equal-count remove/add runs for inline diff.
-// startLine is the new-file line number of the first line in this fragment.
-// Returns rendered lines and parallel line numbers (-1 for deletions/hunk headers).
 func renderFragmentLines(fragLines []gitdiff.Line, lexer chroma.Lexer, startLine int) ([]string, []int) {
 	var out []string
 	var nums []int
@@ -90,7 +88,6 @@ func renderFragmentLines(fragLines []gitdiff.Line, lexer chroma.Lexer, startLine
 		numAdds := k - j
 
 		if numDels > 0 && numAdds > 0 && numDels == numAdds {
-			// Equal-count pairs: show inline character-level diff
 			for n := 0; n < numDels; n++ {
 				old := strings.TrimRight(fragLines[i+n].Line, "\n")
 				new := strings.TrimRight(fragLines[j+n].Line, "\n")
@@ -100,7 +97,6 @@ func renderFragmentLines(fragLines []gitdiff.Line, lexer chroma.Lexer, startLine
 			}
 			i = k
 		} else if numDels == 0 {
-			// No deletions: emit one line (context or unpaired addition)
 			l := fragLines[i]
 			out = append(out, renderDiffLine(l, lexer))
 			switch l.Op {
@@ -112,14 +108,13 @@ func renderFragmentLines(fragLines []gitdiff.Line, lexer chroma.Lexer, startLine
 			}
 			i++
 		} else {
-			// Unequal counts: emit all normally
 			for _, l := range fragLines[i:k] {
 				out = append(out, renderDiffLine(l, lexer))
 				switch l.Op {
 				case gitdiff.OpAdd, gitdiff.OpContext:
 					nums = append(nums, newLine)
 					newLine++
-				default: // OpDelete
+				default:
 					nums = append(nums, -1)
 				}
 			}
@@ -129,7 +124,6 @@ func renderFragmentLines(fragLines []gitdiff.Line, lexer chroma.Lexer, startLine
 	return out, nums
 }
 
-// renderInlineDiffLines shows a paired remove/add with character-level change highlighting.
 func renderInlineDiffLines(old, new string) []string {
 	diffs := dmp.DiffMain(old, new, false)
 	dmp.DiffCleanupSemantic(diffs)
@@ -152,9 +146,6 @@ func renderInlineDiffLines(old, new string) []string {
 	return []string{oldLine.String(), newLine.String()}
 }
 
-// withLineBg applies a truecolor background to already-highlighted text,
-// re-injecting it after every reset so chroma's fg colors show through.
-// Lipgloss/termenv auto-quantizes the hex to 256-color on terminals that need it.
 func withLineBg(s string, hex string) string {
 	hex = strings.TrimPrefix(hex, "#")
 	var r, g, b int
@@ -174,7 +165,6 @@ func renderDiffLine(line gitdiff.Line, lexer chroma.Lexer) string {
 		return " " + syntaxHighlight(content, lexer)
 	}
 }
-
 
 func syntaxHighlight(code string, lexer chroma.Lexer) string {
 	if lexer == nil {

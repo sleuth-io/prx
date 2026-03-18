@@ -1,4 +1,4 @@
-package tui
+package diff
 
 import (
 	"fmt"
@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/sleuth-io/prx/internal/github"
+	"github.com/sleuth-io/prx/internal/tui/style"
 )
 
 var (
@@ -28,16 +29,6 @@ var (
 				BorderForeground(lipgloss.Color("214")).
 				PaddingLeft(1)
 
-	panelTitleFocused = lipgloss.NewStyle().
-				Bold(true).
-				Background(lipgloss.Color("62")).
-				Foreground(lipgloss.Color("230")).
-				Padding(0, 1)
-	panelTitleBlurred = lipgloss.NewStyle().
-				Background(lipgloss.Color("237")).
-				Foreground(lipgloss.Color("243")).
-				Padding(0, 1)
-
 	cursorLineStyle = lipgloss.NewStyle().Background(lipgloss.Color("237"))
 )
 
@@ -55,38 +46,41 @@ type collapsible struct {
 	lineIdx int
 	kind    collapsibleKind
 	fileIdx int
-	comment *commentItem
-	group   *commentGroup
+	comment *CommentItem
+	group   *CommentGroup
 }
 
-type diffFile struct {
-	name      string
-	collapsed bool
-	rendered  []string
-	lineNums  []int // parallel to rendered; -1 for hunk headers/deletions
+// File is a parsed diff file with pre-rendered colored lines.
+type File struct {
+	Name      string
+	Collapsed bool
+	Rendered  []string
+	LineNums  []int // parallel to Rendered; -1 for hunk headers/deletions
 }
 
-type commentItem struct {
-	author       string
-	path         string // empty for top-level
-	body         string
-	collapsed    bool
-	pending      bool   // true while the API call is in-flight
+// CommentItem is a single comment (inline or top-level).
+type CommentItem struct {
+	Author       string
+	Path         string // empty for top-level
+	Body         string
+	Collapsed    bool
+	Pending      bool   // true while the API call is in-flight
 	renderedBody string // cached markdown render
 }
 
-type commentGroup struct {
-	author    string
-	comments  []*commentItem
-	collapsed bool
+// CommentGroup groups top-level comments by author.
+type CommentGroup struct {
+	Author    string
+	Comments  []*CommentItem
+	Collapsed bool
 }
 
 // DiffView is a scrollable diff viewer with collapsible files and comments.
 type DiffView struct {
-	files          []*diffFile
+	files          []*File
 	filesCollapsed bool            // controls the files group header
-	commentGroups  []*commentGroup // top-level PR comments grouped by author
-	inline         []*commentItem  // inline code comments (grouped into files during render)
+	commentGroups  []*CommentGroup // top-level PR comments grouped by author
+	inline         []*CommentItem  // inline code comments (grouped into files during render)
 	collapsibles   []collapsible   // ordered list of all collapsible positions
 	lines          []string        // built lines (no cursor highlight applied)
 	cursorLine     int
@@ -117,34 +111,34 @@ func (d *DiffView) SetSize(width, height int) {
 }
 
 func (d *DiffView) SetContent(diff string, pr *github.PR) {
-	d.SetParsedContent(parseDiff(diff), pr)
+	d.SetParsedContent(ParseDiff(diff), pr)
 }
 
-// SetParsedContent sets the diff view using pre-parsed files (avoids re-running parseDiff).
-func (d *DiffView) SetParsedContent(files []*diffFile, pr *github.PR) {
+// SetParsedContent sets the diff view using pre-parsed files (avoids re-running ParseDiff).
+func (d *DiffView) SetParsedContent(files []*File, pr *github.PR) {
 	d.files = files
 	d.filesCollapsed = false
 
 	// Group top-level comments by author (preserving first-appearance order)
-	groupByAuthor := map[string]*commentGroup{}
+	groupByAuthor := map[string]*CommentGroup{}
 	d.commentGroups = nil
 	for _, c := range pr.Comments {
-		item := &commentItem{author: c.Author, body: c.Body, collapsed: true}
+		item := &CommentItem{Author: c.Author, Body: c.Body, Collapsed: true}
 		if g, ok := groupByAuthor[c.Author]; ok {
-			g.comments = append(g.comments, item)
+			g.Comments = append(g.Comments, item)
 		} else {
-			g = &commentGroup{author: c.Author, collapsed: true, comments: []*commentItem{item}}
+			g = &CommentGroup{Author: c.Author, Collapsed: true, Comments: []*CommentItem{item}}
 			groupByAuthor[c.Author] = g
 			d.commentGroups = append(d.commentGroups, g)
 		}
 	}
 	d.inline = nil
 	for _, c := range pr.InlineComments {
-		d.inline = append(d.inline, &commentItem{
-			author:    c.Author,
-			path:      c.Path,
-			body:      c.Body,
-			collapsed: true,
+		d.inline = append(d.inline, &CommentItem{
+			Author:    c.Author,
+			Path:      c.Path,
+			Body:      c.Body,
+			Collapsed: true,
 		})
 	}
 	d.cursorLine = 0
@@ -154,7 +148,7 @@ func (d *DiffView) SetParsedContent(files []*diffFile, pr *github.PR) {
 
 // SetDiff is kept for callers that don't have a PR available.
 func (d *DiffView) SetDiff(raw string) {
-	d.files = parseDiff(raw)
+	d.files = ParseDiff(raw)
 	d.commentGroups = nil
 	d.inline = nil
 	d.cursorLine = 0
@@ -174,21 +168,21 @@ func (d *DiffView) CollapseCurrentFile() {
 			d.rebuildAndStay(c)
 		}
 	case kindFile:
-		if !d.files[c.fileIdx].collapsed {
-			d.files[c.fileIdx].collapsed = true
+		if !d.files[c.fileIdx].Collapsed {
+			d.files[c.fileIdx].Collapsed = true
 			d.rebuildAndStay(c)
 		}
 	case kindCommentGroup:
-		if !c.group.collapsed {
-			c.group.collapsed = true
+		if !c.group.Collapsed {
+			c.group.Collapsed = true
 			d.rebuildAndStay(c)
 		}
 	case kindComment:
-		if !c.comment.collapsed {
-			c.comment.collapsed = true
+		if !c.comment.Collapsed {
+			c.comment.Collapsed = true
 			d.rebuildAndStay(c)
 		} else if c.group != nil {
-			c.group.collapsed = true
+			c.group.Collapsed = true
 			d.rebuildAndStay(c)
 		}
 	}
@@ -206,18 +200,18 @@ func (d *DiffView) ExpandCurrentFile() {
 			d.rebuildAndStay(c)
 		}
 	case kindFile:
-		if d.files[c.fileIdx].collapsed {
-			d.files[c.fileIdx].collapsed = false
+		if d.files[c.fileIdx].Collapsed {
+			d.files[c.fileIdx].Collapsed = false
 			d.rebuildAndStay(c)
 		}
 	case kindCommentGroup:
-		if c.group.collapsed {
-			c.group.collapsed = false
+		if c.group.Collapsed {
+			c.group.Collapsed = false
 			d.rebuildAndStay(c)
 		}
 	case kindComment:
-		if c.comment.collapsed {
-			c.comment.collapsed = false
+		if c.comment.Collapsed {
+			c.comment.Collapsed = false
 			d.rebuildAndStay(c)
 		}
 	}
@@ -258,7 +252,6 @@ func (d *DiffView) MoveCursor(delta int) {
 		d.cursorLine = len(d.lines) - 1
 	}
 
-	// Lock cursor to viewport center when possible; scroll viewport to compensate
 	idealOffset := d.cursorLine - d.viewport.Height/2
 	if idealOffset < 0 {
 		idealOffset = 0
@@ -299,29 +292,28 @@ func (d DiffView) Update(msg tea.Msg) (DiffView, tea.Cmd) {
 	return d, nil
 }
 
-// AddPendingComment adds a comment to the live diff view marked as pending (API call in-flight).
+// AddPendingComment adds a comment to the live diff view marked as pending.
 // Returns a pointer to the item so the caller can confirm or remove it later.
-// Does not reset scroll position.
-func (d *DiffView) AddPendingComment(c github.ReviewComment) *commentItem {
-	item := &commentItem{
-		author:    c.Author,
-		path:      c.Path,
-		body:      c.Body,
-		collapsed: false,
-		pending:   true,
+func (d *DiffView) AddPendingComment(c github.ReviewComment) *CommentItem {
+	item := &CommentItem{
+		Author:    c.Author,
+		Path:      c.Path,
+		Body:      c.Body,
+		Collapsed: false,
+		Pending:   true,
 	}
 	if c.Path != "" {
 		d.inline = append(d.inline, item)
 	} else {
 		for _, g := range d.commentGroups {
-			if g.author == c.Author {
-				g.comments = append(g.comments, item)
-				g.collapsed = false
+			if g.Author == c.Author {
+				g.Comments = append(g.Comments, item)
+				g.Collapsed = false
 				d.rebuildViewport()
 				return item
 			}
 		}
-		g := &commentGroup{author: c.Author, collapsed: false, comments: []*commentItem{item}}
+		g := &CommentGroup{Author: c.Author, Collapsed: false, Comments: []*CommentItem{item}}
 		d.commentGroups = append(d.commentGroups, g)
 	}
 	d.rebuildViewport()
@@ -329,17 +321,17 @@ func (d *DiffView) AddPendingComment(c github.ReviewComment) *commentItem {
 }
 
 // ConfirmComment clears the pending flag on a comment item.
-func (d *DiffView) ConfirmComment(item *commentItem) {
-	item.pending = false
+func (d *DiffView) ConfirmComment(item *CommentItem) {
+	item.Pending = false
 	d.rebuildViewport()
 }
 
 // RemoveComment removes a pending comment (on API error).
-func (d *DiffView) RemoveComment(item *commentItem) {
+func (d *DiffView) RemoveComment(item *CommentItem) {
 	for _, g := range d.commentGroups {
-		for i, c := range g.comments {
+		for i, c := range g.Comments {
 			if c == item {
-				g.comments = append(g.comments[:i], g.comments[i+1:]...)
+				g.Comments = append(g.Comments[:i], g.Comments[i+1:]...)
 				d.rebuildViewport()
 				return
 			}
@@ -355,7 +347,6 @@ func (d *DiffView) RemoveComment(item *commentItem) {
 }
 
 // CurrentLineTarget returns the file path and new-file line number at the cursor.
-// Returns ("", 0) if cursor is not on a commentable code line.
 func (d *DiffView) CurrentLineTarget() (path string, line int) {
 	var fileCol *collapsible
 	for i := range d.collapsibles {
@@ -368,69 +359,63 @@ func (d *DiffView) CurrentLineTarget() (path string, line int) {
 		return "", 0
 	}
 	f := d.files[fileCol.fileIdx]
-	// offset within the file's rendered lines (skip the file header line itself)
 	offset := d.cursorLine - fileCol.lineIdx - 1
-	if offset < 0 || offset >= len(f.lineNums) {
+	if offset < 0 || offset >= len(f.LineNums) {
 		return "", 0
 	}
-	ln := f.lineNums[offset]
+	ln := f.LineNums[offset]
 	if ln <= 0 {
 		return "", 0
 	}
-	return f.name, ln
+	return f.Name, ln
 }
 
 // ViewContent renders the diff body without a title bar (for tabbed layout).
 func (d DiffView) ViewContent() string {
-	return lipgloss.JoinHorizontal(lipgloss.Top, d.viewport.View(), renderScrollbar(d.viewport))
+	return lipgloss.JoinHorizontal(lipgloss.Top, d.viewport.View(), style.RenderScrollbar(d.viewport))
 }
 
 func (d DiffView) View() string {
-	titleStyle := panelTitleBlurred
+	titleStyle := style.PanelTitleBlurred
 	hint := " tab to focus"
 	if d.Focused {
-		titleStyle = panelTitleFocused
-		hint = " ← collapse  → expand  ] next file  [ prev file  c comment  tab to exit"
+		titleStyle = style.PanelTitleFocused
+		hint = " \u2190 collapse  \u2192 expand  ] next file  [ prev file  c comment  tab to exit"
 	}
 	width := d.width
 	if width == 0 {
 		width = 80
 	}
-	title := titleStyle.Render("Diff") + dimPanelHint(hint, titleStyle, width)
+	title := titleStyle.Render("Diff") + style.DimPanelHint(hint, titleStyle, width)
 	return lipgloss.JoinVertical(lipgloss.Left, title, d.ViewContent())
 }
 
 // ViewWithModal renders the diff with modal injected at the cursor position.
-// The total rendered height is identical to View() so the layout doesn't shift.
 func (d DiffView) ViewWithModal(modal string) string {
-	titleStyle := panelTitleBlurred
+	titleStyle := style.PanelTitleBlurred
 	hint := " tab to focus"
 	if d.Focused {
-		titleStyle = panelTitleFocused
-		hint = " ← collapse  → expand  ] next file  [ prev file  c comment  tab to exit"
+		titleStyle = style.PanelTitleFocused
+		hint = " \u2190 collapse  \u2192 expand  ] next file  [ prev file  c comment  tab to exit"
 	}
 	width := d.width
 	if width == 0 {
 		width = 80
 	}
-	title := titleStyle.Render("Diff") + dimPanelHint(hint, titleStyle, width)
+	title := titleStyle.Render("Diff") + style.DimPanelHint(hint, titleStyle, width)
 
 	vpHeight := d.viewport.Height
 
-	// Use viewport.View() as the base: it is guaranteed to be exactly vpHeight
-	// lines, properly padded and cursor-highlighted via syncViewport.
 	vpStr := strings.TrimRight(d.viewport.View(), "\n")
 	vpLines := strings.Split(vpStr, "\n")
 	for len(vpLines) < vpHeight {
 		vpLines = append(vpLines, "")
 	}
 
-	// Strip trailing newline from modal so line-count is unambiguous.
 	modal = strings.TrimRight(modal, "\n")
 	modalLines := strings.Split(modal, "\n")
 	modalH := len(modalLines)
 
-	// Cursor position within the visible viewport
 	cursorInView := d.cursorLine - d.viewport.YOffset
 	if cursorInView < 0 {
 		cursorInView = 0
@@ -439,7 +424,6 @@ func (d DiffView) ViewWithModal(modal string) string {
 		cursorInView = vpHeight - 1
 	}
 
-	// Insert modal after the cursor line; push up if it would overflow.
 	aboveCount := cursorInView + 1
 	belowCount := vpHeight - aboveCount - modalH
 	if belowCount < 0 {
@@ -450,7 +434,6 @@ func (d DiffView) ViewWithModal(modal string) string {
 		belowCount = 0
 	}
 
-	// Assemble exactly vpHeight lines.
 	result := make([]string, 0, vpHeight)
 	for i := 0; i < aboveCount; i++ {
 		result = append(result, vpLines[i])
@@ -459,7 +442,6 @@ func (d DiffView) ViewWithModal(modal string) string {
 	for i := 0; i < belowCount; i++ {
 		result = append(result, vpLines[aboveCount+i])
 	}
-	// Guarantee exact height (handles edge cases where modal is taller than vpHeight).
 	for len(result) < vpHeight {
 		result = append(result, "")
 	}
@@ -467,64 +449,49 @@ func (d DiffView) ViewWithModal(modal string) string {
 
 	content := lipgloss.JoinHorizontal(lipgloss.Top,
 		strings.Join(result, "\n"),
-		renderScrollbar(d.viewport),
+		style.RenderScrollbar(d.viewport),
 	)
 	return lipgloss.JoinVertical(lipgloss.Left, title, content)
 }
 
-func dimPanelHint(hint string, titleStyle lipgloss.Style, width int, titleTexts ...string) string {
-	titleText := "Diff"
-	if len(titleTexts) > 0 {
-		titleText = titleTexts[0]
+func renderCommentGroup(g *CommentGroup) string {
+	count := style.DimStyle.Render(fmt.Sprintf("(%d)", len(g.Comments)))
+	if g.Collapsed {
+		return "\U0001f4ac " + commentAuthorStyle.Render(g.Author) + " " + count + diffCollapsed.Render("  [\u2192 expand]")
 	}
-	titleWidth := lipgloss.Width(titleStyle.Render(titleText))
-	remaining := width - titleWidth
-	if remaining <= 0 {
-		return ""
-	}
-	return panelTitleBlurred.Faint(true).Width(remaining).Align(lipgloss.Right).Render(hint)
+	return "\U0001f4ac " + commentAuthorStyle.Render(g.Author) + " " + count + diffCollapsed.Render("  [\u2190 collapse]")
 }
 
-func renderCommentGroup(g *commentGroup) string {
-	count := dimStyle.Render(fmt.Sprintf("(%d)", len(g.comments)))
-	if g.collapsed {
-		return "💬 " + commentAuthorStyle.Render(g.author) + " " + count + diffCollapsed.Render("  [→ expand]")
-	}
-	return "💬 " + commentAuthorStyle.Render(g.author) + " " + count + diffCollapsed.Render("  [← collapse]")
-}
-
-// renderComment renders a single comment. grouped=true suppresses the author prefix (used within an expanded group).
-func renderComment(c *commentItem, width int, grouped bool, r *glamour.TermRenderer) []string {
+func renderComment(c *CommentItem, width int, grouped bool, r *glamour.TermRenderer) []string {
 	var header string
 	if grouped {
 		header = "  "
 	} else {
 		prefix := ""
-		if c.path != "" {
-			prefix = dimStyle.Render(c.path + ": ")
+		if c.Path != "" {
+			prefix = style.DimStyle.Render(c.Path + ": ")
 		}
 		pendingMark := ""
-		if c.pending {
-			pendingMark = dimStyle.Render(" …posting")
+		if c.Pending {
+			pendingMark = style.DimStyle.Render(" \u2026posting")
 		}
-		header = "💬 " + commentAuthorStyle.Render(c.author) + pendingMark + "  " + prefix
+		header = "\U0001f4ac " + commentAuthorStyle.Render(c.Author) + pendingMark + "  " + prefix
 	}
 
-	if c.collapsed {
-		first := firstLine(c.body)
+	if c.Collapsed {
+		first := firstLine(c.Body)
 		if len(first) > 80 {
-			first = first[:80] + "…"
+			first = first[:80] + "\u2026"
 		}
-		return []string{header + commentStyle.Render(first) + diffCollapsed.Render("  [→ expand]")}
+		return []string{header + commentStyle.Render(first) + diffCollapsed.Render("  [\u2192 expand]")}
 	}
 
-	// Expanded: render Markdown then wrap with left border (cached by width)
 	if c.renderedBody == "" {
-		c.renderedBody = renderMarkdown(r, c.body)
+		c.renderedBody = renderMarkdown(r, c.Body)
 	}
 	body := commentExpandedStyle.Width(width - 4).Render(c.renderedBody)
 	var out []string
-	out = append(out, header+diffCollapsed.Render("  [← collapse]"))
+	out = append(out, header+diffCollapsed.Render("  [\u2190 collapse]"))
 	out = append(out, strings.Split(body, "\n")...)
 	return out
 }

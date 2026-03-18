@@ -5,17 +5,13 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/sleuth-io/prx/internal/ai"
 	"github.com/sleuth-io/prx/internal/github"
+	"github.com/sleuth-io/prx/internal/tui/chat"
+	"github.com/sleuth-io/prx/internal/tui/diff"
 )
 
 // SetProgramMsg delivers the tea.Program reference for streaming sends.
 type SetProgramMsg struct {
 	Program *tea.Program
-}
-
-// chatMessage is a single message in a PR chat conversation.
-type chatMessage struct {
-	role    string // "user" or "assistant"
-	content string
 }
 
 // PRCard is a PR — may be in-progress (Scoring=true) or fully assessed.
@@ -26,16 +22,16 @@ type PRCard struct {
 	Verdict       string
 	Scoring       bool
 	ScoringErr    error
-	parsedFiles   []*diffFile    // pre-parsed diff files (nil until ready)
-	chatMessages  []chatMessage    // in-memory chat history per PR
-	chatContext   *ai.DiffContext  // file/line the reviewer was looking at when chat opened
-	chatCancel    func()           // cancels the running claude process (nil if not streaming)
-	worktreePath  string           // git worktree path for chat (empty until created)
+	parsedFiles   []*diff.File     // pre-parsed diff files (nil until ready)
+	chatMessages  []chat.Message   // in-memory chat history per PR
+	chatContext   *ai.DiffContext   // file/line the reviewer was looking at when chat opened
+	chatCancel    func()            // cancels the running claude process (nil if not streaming)
+	worktreePath  string            // git worktree path for chat (empty until created)
 }
 
 type prDiffParsedMsg struct {
 	prNumber int
-	files    []*diffFile
+	files    []*diff.File
 }
 
 type focus int
@@ -63,7 +59,7 @@ type commentSubmittedMsg struct {
 	filePath    string
 	fileLine    int
 	body        string
-	pendingItem *commentItem
+	pendingItem *diff.CommentItem
 	err         error
 }
 

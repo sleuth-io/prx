@@ -1,4 +1,4 @@
-package tui
+package chat
 
 import (
 	"fmt"
@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/sleuth-io/prx/internal/ai"
+	"github.com/sleuth-io/prx/internal/tui/style"
 )
 
 var (
@@ -17,22 +18,28 @@ var (
 	chatDimStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
 )
 
-// ChatView is a chat panel for asking questions about a PR.
-type ChatView struct {
-	messages      []chatMessage
+// Message is a single message in a PR chat conversation.
+type Message struct {
+	Role    string // "user" or "assistant"
+	Content string
+}
+
+// View is a chat panel for asking questions about a PR.
+type View struct {
+	messages      []Message
 	input         textarea.Model
 	viewport      viewport.Model
-	status        string // non-empty = shown with spinner (e.g. "Creating worktree...", "Starting Claude...")
-	welcomeText   string // shown when chat is empty and ready
-	streaming     bool
-	streamContent string // content being streamed for current response
-	spinnerView   string // rendered spinner frame (set by parent)
-	diffContext   *ai.DiffContext // file/line context from diff cursor
+	Status        string // non-empty = shown with spinner
+	WelcomeText   string // shown when chat is empty and ready
+	Streaming     bool
+	StreamContent string // content being streamed for current response
+	SpinnerView   string // rendered spinner frame (set by parent)
+	diffContext   *ai.DiffContext
 	width, height int
 	Focused       bool
 }
 
-func NewChatView(width, height int) ChatView {
+func New(width, height int) View {
 	ta := textarea.New()
 	ta.Placeholder = "Ask about this PR..."
 	ta.CharLimit = 2000
@@ -42,7 +49,7 @@ func NewChatView(width, height int) ChatView {
 	ta.BlurredStyle.CursorLine = lipgloss.NewStyle()
 
 	vp := viewport.New(width, height-3) // 3 = input(1) + title(1) + border(1)
-	return ChatView{
+	return View{
 		input:    ta,
 		viewport: vp,
 		width:    width,
@@ -50,7 +57,7 @@ func NewChatView(width, height int) ChatView {
 	}
 }
 
-func (c *ChatView) SetSize(width, height int) {
+func (c *View) SetSize(width, height int) {
 	c.width = width
 	c.height = height
 	inputH := 1
@@ -59,13 +66,13 @@ func (c *ChatView) SetSize(width, height int) {
 	if vpH < 2 {
 		vpH = 2
 	}
-	c.viewport.Width = width - 1 // reserve 1 for scrollbar
+	c.viewport.Width = width - 1
 	c.viewport.Height = vpH
 	c.input.SetWidth(width - 4)
-	c.rebuildViewport()
+	c.RebuildViewport()
 }
 
-func (c *ChatView) SetContext(ctx *ai.DiffContext) {
+func (c *View) SetContext(ctx *ai.DiffContext) {
 	c.diffContext = ctx
 	if ctx != nil && ctx.File != "" {
 		if ctx.Line > 0 {
@@ -78,59 +85,57 @@ func (c *ChatView) SetContext(ctx *ai.DiffContext) {
 	}
 }
 
-func (c *ChatView) SetMessages(msgs []chatMessage) {
+func (c *View) SetMessages(msgs []Message) {
 	c.messages = msgs
-	c.rebuildViewport()
+	c.RebuildViewport()
 }
 
-func (c *ChatView) AppendToken(token string) {
-	c.status = "" // clear any init status once tokens flow
-	c.streamContent += token
-	c.rebuildViewport()
+func (c *View) AppendToken(token string) {
+	c.Status = ""
+	c.StreamContent += token
+	c.RebuildViewport()
 }
 
-func (c *ChatView) FinishStream(fullResponse string) {
-	c.streaming = false
-	c.streamContent = ""
-	c.status = ""
-	// The full message is added to messages by the caller
-	c.rebuildViewport()
+func (c *View) FinishStream(fullResponse string) {
+	c.Streaming = false
+	c.StreamContent = ""
+	c.Status = ""
+	c.RebuildViewport()
 }
 
-func (c *ChatView) rebuildViewport() {
+func (c *View) RebuildViewport() {
 	var lines []string
 	w := c.width - 4
 
 	for _, msg := range c.messages {
-		if msg.role == "user" {
+		if msg.Role == "user" {
 			lines = append(lines, "")
 			lines = append(lines, chatUserStyle.Render("You:"))
-			wrapped := lipgloss.NewStyle().Width(w).Render(msg.content)
+			wrapped := lipgloss.NewStyle().Width(w).Render(msg.Content)
 			lines = append(lines, strings.Split(wrapped, "\n")...)
 		} else {
 			lines = append(lines, "")
 			lines = append(lines, chatAssistantStyle.Render("Claude:"))
-			wrapped := lipgloss.NewStyle().Width(w).Render(msg.content)
+			wrapped := lipgloss.NewStyle().Width(w).Render(msg.Content)
 			lines = append(lines, strings.Split(wrapped, "\n")...)
 		}
 	}
 
-	// Status indicators
-	if c.streaming && c.streamContent != "" {
+	if c.Streaming && c.StreamContent != "" {
 		lines = append(lines, "")
 		lines = append(lines, chatAssistantStyle.Render("Claude:"))
-		wrapped := lipgloss.NewStyle().Width(w).Render(c.streamContent)
+		wrapped := lipgloss.NewStyle().Width(w).Render(c.StreamContent)
 		lines = append(lines, strings.Split(wrapped, "\n")...)
-		lines = append(lines, chatDimStyle.Render("▊"))
-	} else if c.streaming {
+		lines = append(lines, chatDimStyle.Render("\u258a"))
+	} else if c.Streaming {
 		lines = append(lines, "")
-		lines = append(lines, chatDimStyle.Render(c.spinnerView+" Thinking..."))
-	} else if c.status != "" {
+		lines = append(lines, chatDimStyle.Render(c.SpinnerView+" Thinking..."))
+	} else if c.Status != "" {
 		lines = append(lines, "")
-		lines = append(lines, chatDimStyle.Render(c.spinnerView+" "+c.status))
-	} else if len(c.messages) == 0 && c.welcomeText != "" {
+		lines = append(lines, chatDimStyle.Render(c.SpinnerView+" "+c.Status))
+	} else if len(c.messages) == 0 && c.WelcomeText != "" {
 		lines = append(lines, "")
-		for _, wl := range strings.Split(c.welcomeText, "\n") {
+		for _, wl := range strings.Split(c.WelcomeText, "\n") {
 			lines = append(lines, chatDimStyle.Render("  "+wl))
 		}
 	}
@@ -139,51 +144,50 @@ func (c *ChatView) rebuildViewport() {
 	c.viewport.GotoBottom()
 }
 
-func (c ChatView) Update(msg tea.Msg) (ChatView, tea.Cmd) {
+func (c View) Update(msg tea.Msg) (View, tea.Cmd) {
 	if !c.Focused {
 		return c, nil
 	}
 
-	// Enter and esc are handled by the parent (tui.go); only forward other keys to textarea
 	var cmd tea.Cmd
 	c.input, cmd = c.input.Update(msg)
 	return c, cmd
 }
 
-func (c *ChatView) InputValue() string {
+func (c *View) InputValue() string {
 	return strings.TrimSpace(c.input.Value())
 }
 
-func (c *ChatView) ResetInput() {
+func (c *View) ResetInput() {
 	c.input.Reset()
 }
 
-func (c *ChatView) Focus() tea.Cmd {
+func (c *View) Focus() tea.Cmd {
 	return c.input.Focus()
 }
 
-func (c *ChatView) Blur() {
+func (c *View) Blur() {
 	c.input.Blur()
 }
 
-// ChatTabName returns the label for the chat tab.
-func (c ChatView) ChatTabName() string {
+// TabName returns the label for the chat tab.
+func (c View) TabName() string {
 	if c.diffContext != nil && c.diffContext.File != "" {
 		if c.diffContext.Line > 0 {
-			return fmt.Sprintf("Chat — %s:%d", c.diffContext.File, c.diffContext.Line)
+			return fmt.Sprintf("Chat \u2014 %s:%d", c.diffContext.File, c.diffContext.Line)
 		}
-		return fmt.Sprintf("Chat — %s", c.diffContext.File)
+		return fmt.Sprintf("Chat \u2014 %s", c.diffContext.File)
 	}
 	return "Chat"
 }
 
 // ViewContent renders the chat body without a title bar (for tabbed layout).
-func (c ChatView) ViewContent() string {
+func (c View) ViewContent() string {
 	width := c.width
 	if width == 0 {
 		width = 80
 	}
-	vpContent := lipgloss.JoinHorizontal(lipgloss.Top, c.viewport.View(), renderScrollbar(c.viewport))
+	vpContent := lipgloss.JoinHorizontal(lipgloss.Top, c.viewport.View(), style.RenderScrollbar(c.viewport))
 
 	inputBorder := lipgloss.NewStyle().
 		BorderStyle(lipgloss.NormalBorder()).
@@ -195,18 +199,18 @@ func (c ChatView) ViewContent() string {
 	return lipgloss.JoinVertical(lipgloss.Left, vpContent, inputArea)
 }
 
-func (c ChatView) View() string {
-	titleStyle := panelTitleBlurred
+func (c View) View() string {
+	titleStyle := style.PanelTitleBlurred
 	hint := " tab to focus"
 	if c.Focused {
-		titleStyle = panelTitleFocused
+		titleStyle = style.PanelTitleFocused
 		hint = " enter send  alt+enter newline  esc back to diff"
 	}
 	width := c.width
 	if width == 0 {
 		width = 80
 	}
-	panelName := c.ChatTabName()
-	title := titleStyle.Render(panelName) + dimPanelHint(hint, titleStyle, width, panelName)
+	panelName := c.TabName()
+	title := titleStyle.Render(panelName) + style.DimPanelHint(hint, titleStyle, width, panelName)
 	return lipgloss.JoinVertical(lipgloss.Left, title, c.ViewContent())
 }

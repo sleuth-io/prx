@@ -1,12 +1,10 @@
-package tui
+package diff
 
 import (
 	"fmt"
 	"strings"
 )
 
-// rebuildAndStay rebuilds the viewport after a collapse/expand, keeping the
-// cursor on the same collapsible item without scrolling the viewport.
 func (d *DiffView) rebuildAndStay(c *collapsible) {
 	d.rebuildViewport()
 	d.cursorLine = d.collapsibleLineIdx(c)
@@ -29,7 +27,6 @@ func (d *DiffView) collapsibleAtOffset() *collapsible {
 	return best
 }
 
-// collapsibleLineIdx finds the current line index for a collapsible after rebuild.
 func (d *DiffView) collapsibleLineIdx(target *collapsible) int {
 	for _, c := range d.collapsibles {
 		if c.kind == target.kind && c.fileIdx == target.fileIdx && c.comment == target.comment && c.group == target.group {
@@ -51,8 +48,8 @@ func (d *DiffView) rebuildViewport() {
 			group:   g,
 		})
 		lines = append(lines, renderCommentGroup(g))
-		if !g.collapsed {
-			for _, c := range g.comments {
+		if !g.Collapsed {
+			for _, c := range g.Comments {
 				d.collapsibles = append(d.collapsibles, collapsible{
 					lineIdx: len(lines),
 					kind:    kindComment,
@@ -66,19 +63,19 @@ func (d *DiffView) rebuildViewport() {
 	}
 
 	// Build inline comment map: path -> comments
-	inlineByFile := map[string][]*commentItem{}
+	inlineByFile := map[string][]*CommentItem{}
 	for _, c := range d.inline {
-		inlineByFile[c.path] = append(inlineByFile[c.path], c)
+		inlineByFile[c.Path] = append(inlineByFile[c.Path], c)
 	}
 
 	// Files group header
 	d.collapsibles = append(d.collapsibles, collapsible{lineIdx: len(lines), kind: kindFilesGroup})
-	filesHeader := diffFileStyle.Render(fmt.Sprintf("── Files (%d) ", len(d.files)))
+	filesHeader := diffFileStyle.Render(fmt.Sprintf("\u2500\u2500 Files (%d) ", len(d.files)))
 	if d.filesCollapsed {
-		filesHeader += diffCollapsed.Render(" [→ expand]")
+		filesHeader += diffCollapsed.Render(" [\u2192 expand]")
 		lines = append(lines, filesHeader)
 	} else {
-		filesHeader += diffCollapsed.Render(" [← collapse]")
+		filesHeader += diffCollapsed.Render(" [\u2190 collapse]")
 		lines = append(lines, filesHeader)
 
 		for i, f := range d.files {
@@ -88,15 +85,15 @@ func (d *DiffView) rebuildViewport() {
 				fileIdx: i,
 			})
 
-			fheader := diffFileStyle.Render("  ── " + f.name + " ")
-			if f.collapsed {
-				fheader += diffCollapsed.Render(" [→ expand]")
+			fheader := diffFileStyle.Render("  \u2500\u2500 " + f.Name + " ")
+			if f.Collapsed {
+				fheader += diffCollapsed.Render(" [\u2192 expand]")
 				lines = append(lines, fheader)
 			} else {
 				lines = append(lines, fheader)
-				lines = append(lines, f.rendered...)
+				lines = append(lines, f.Rendered...)
 
-				for _, c := range inlineByFile[f.name] {
+				for _, c := range inlineByFile[f.Name] {
 					lines = append(lines, "")
 					d.collapsibles = append(d.collapsibles, collapsible{
 						lineIdx: len(lines),

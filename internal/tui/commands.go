@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math"
 	"math/rand"
 	"os/exec"
 	"strings"
@@ -16,11 +15,13 @@ import (
 	"github.com/sleuth-io/prx/internal/cache"
 	"github.com/sleuth-io/prx/internal/github"
 	"github.com/sleuth-io/prx/internal/logger"
+	"github.com/sleuth-io/prx/internal/tui/chat"
+	"github.com/sleuth-io/prx/internal/tui/diff"
 )
 
 func parseDiffCmd(pr *github.PR) tea.Cmd {
 	return func() tea.Msg {
-		return prDiffParsedMsg{prNumber: pr.Number, files: parseDiff(pr.Diff)}
+		return prDiffParsedMsg{prNumber: pr.Number, files: diff.ParseDiff(pr.Diff)}
 	}
 }
 
@@ -70,14 +71,14 @@ func approveCmd(repo string, number int) tea.Cmd {
 	}
 }
 
-func postGlobalCommentCmd(repo string, prNumber int, body string, item *commentItem) tea.Cmd {
+func postGlobalCommentCmd(repo string, prNumber int, body string, item *diff.CommentItem) tea.Cmd {
 	return func() tea.Msg {
 		err := github.PostComment(repo, prNumber, body)
 		return commentSubmittedMsg{prNumber: prNumber, body: body, pendingItem: item, err: err}
 	}
 }
 
-func postInlineCommentCmd(repo string, prNumber int, sha, path string, line int, body string, item *commentItem) tea.Cmd {
+func postInlineCommentCmd(repo string, prNumber int, sha, path string, line int, body string, item *diff.CommentItem) tea.Cmd {
 	return func() tea.Msg {
 		err := github.PostInlineComment(repo, prNumber, sha, path, line, body)
 		return commentSubmittedMsg{prNumber: prNumber, isInline: true,
@@ -106,35 +107,9 @@ func reviewsText(pr *github.PR) string {
 	return sb.String()
 }
 
-func weightedScore(assessment *ai.Assessment, app *app.App) float64 {
-	var totalWeight, weighted float64
-	for _, c := range app.Config.Criteria {
-		if f, ok := assessment.Factors[c.Name]; ok {
-			totalWeight += c.Weight
-			weighted += float64(f.Score) * c.Weight
-		}
-	}
-	if totalWeight == 0 {
-		return 0
-	}
-	return math.Round(weighted/totalWeight*10) / 10
-}
-
-func computeVerdict(score float64, app *app.App) string {
-	t := app.Config.Thresholds
-	if score < t.ApproveBelow {
-		return "approve"
-	}
-	if score > t.ReviewAbove {
-		return "reject"
-	}
-	return "review"
-}
-
 func createWorktreeCmd(repoDir string, headRefName string, prNumber int) tea.Cmd {
 	return func() tea.Msg {
 		logger.Info("worktree: fetching branch %s for PR #%d", headRefName, prNumber)
-		// Fetch the PR branch so the ref exists locally
 		fetchCmd := exec.Command("git", "fetch", "origin", headRefName)
 		fetchCmd.Dir = repoDir
 		if out, err := fetchCmd.CombinedOutput(); err != nil {
@@ -169,12 +144,11 @@ func removeWorktreeCmd(repoDir, path string) tea.Cmd {
 	}
 }
 
-func sendChatCmd(ctx context.Context, worktreePath string, pr *github.PR, assessment *ai.Assessment, messages []chatMessage, diffCtx *ai.DiffContext, program *tea.Program) tea.Cmd {
+func sendChatCmd(ctx context.Context, worktreePath string, pr *github.PR, assessment *ai.Assessment, messages []chat.Message, diffCtx *ai.DiffContext, program *tea.Program) tea.Cmd {
 	return func() tea.Msg {
-		// Convert to ai.ChatMessage
 		history := make([]ai.ChatMessage, len(messages))
 		for i, m := range messages {
-			history[i] = ai.ChatMessage{Role: m.role, Content: m.content}
+			history[i] = ai.ChatMessage{Role: m.Role, Content: m.Content}
 		}
 
 		prompt := ai.BuildChatPrompt(pr, assessment, history, diffCtx)
@@ -198,7 +172,6 @@ func sendChatCmd(ctx context.Context, worktreePath string, pr *github.PR, assess
 			return chatDoneMsg{prNumber: pr.Number, err: fmt.Errorf("start claude: %w", err)}
 		}
 		var fullResponse strings.Builder
-		// Track what we've already sent as tokens so we can send only deltas
 		prevLen := 0
 		scanner := bufio.NewScanner(stdout)
 		scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
@@ -226,7 +199,6 @@ func sendChatCmd(ctx context.Context, worktreePath string, pr *github.PR, assess
 					program.Send(chatStatusMsg{prNumber: pr.Number, status: "Thinking..."})
 				}
 			case "assistant":
-				// Extract text from message.content[].text
 				var msg struct {
 					Message struct {
 						Content []struct {
@@ -247,7 +219,6 @@ func sendChatCmd(ctx context.Context, worktreePath string, pr *github.PR, assess
 				if text != "" {
 					fullResponse.Reset()
 					fullResponse.WriteString(text)
-					// Send only the new delta
 					if len(text) > prevLen {
 						delta := text[prevLen:]
 						prevLen = len(text)
@@ -275,7 +246,6 @@ func sendChatCmd(ctx context.Context, worktreePath string, pr *github.PR, assess
 
 		if err := cmd.Wait(); err != nil {
 			if ctx.Err() != nil {
-				// User cancelled
 				return chatDoneMsg{prNumber: pr.Number, fullResponse: fullResponse.String()}
 			}
 			logger.Error("chat claude exit for PR #%d: %v\nstderr: %s", pr.Number, err, stderrBuf.String())
@@ -291,3 +261,4 @@ func sendChatCmd(ctx context.Context, worktreePath string, pr *github.PR, assess
 		return chatDoneMsg{prNumber: pr.Number, fullResponse: fullResponse.String()}
 	}
 }
+
