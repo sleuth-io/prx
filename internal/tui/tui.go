@@ -5,10 +5,12 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/sleuth-io/prx/internal/app"
+	"github.com/sleuth-io/prx/internal/github"
 	"github.com/sleuth-io/prx/internal/logger"
 )
 
@@ -38,6 +40,7 @@ type Model struct {
 	diffView     DiffView
 	assessmentVP viewport.Model
 	spinner      spinner.Model
+	modal        commentModal
 	err          error
 	width        int
 	height       int
@@ -69,6 +72,55 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		if m.modal.active {
+			switch msg.String() {
+			case "esc":
+				prev := m.modal.prevFocus
+				m.modal = commentModal{}
+				m.focus = prev
+				m.diffView.Focused = (prev == focusDiff)
+				m.resizeDiffView()
+				return m, nil
+			case "ctrl+s":
+				body := strings.TrimSpace(m.modal.textarea.Value())
+				if body == "" {
+					return m, nil
+				}
+				card := m.currentCard()
+				if card == nil {
+					return m, nil
+				}
+				// Capture modal state before clearing it.
+				isInline := m.modal.isInline
+				filePath := m.modal.filePath
+				fileLine := m.modal.fileLine
+				commitSHA := m.modal.commitSHA
+				prev := m.modal.prevFocus
+				// Add optimistic pending comment immediately.
+				rc := github.ReviewComment{
+					Author: m.app.CurrentUser,
+					Body:   body,
+					Path:   filePath,
+					Line:   fileLine,
+				}
+				pendingItem := m.diffView.AddPendingComment(rc)
+				// Close modal.
+				m.modal = commentModal{}
+				m.focus = prev
+				m.diffView.Focused = (prev == focusDiff)
+				m.resizeDiffView()
+				if isInline {
+					return m, postInlineCommentCmd(m.app.Repo, card.PR.Number,
+						commitSHA, filePath, fileLine, body, pendingItem)
+				}
+				return m, postGlobalCommentCmd(m.app.Repo, card.PR.Number, body, pendingItem)
+			default:
+				var cmd tea.Cmd
+				m.modal.textarea, cmd = m.modal.textarea.Update(msg)
+				return m, cmd
+			}
+		}
+
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
@@ -89,20 +141,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// ctrl+n / ctrl+p navigate PRs from any focus.
+		switch msg.String() {
+		case "ctrl+n":
+			m.navigatePR(1)
+			return m, nil
+		case "ctrl+p":
+			m.navigatePR(-1)
+			return m, nil
+		}
+
 		if m.focus == focusAssessment {
 			switch msg.String() {
 			case "n":
-				if m.current < len(m.cards)-1 {
-					m.current++
-					m.loadCurrentDiff()
-					m.rebuildAssessment()
-				}
+				m.navigatePR(1)
 			case "p":
-				if m.current > 0 {
-					m.current--
-					m.loadCurrentDiff()
-					m.rebuildAssessment()
-				}
+				m.navigatePR(-1)
 			case "j", "down":
 				if m.assessmentVP.AtBottom() {
 					m.focus = focusDiff
@@ -125,10 +179,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, requestChangesCmd(m.app.Repo, card.PR.Number, card.Assessment.ReviewNotes)
 				}
 			case "s":
-				if m.current < len(m.cards)-1 {
-					m.current++
-					m.loadCurrentDiff()
-					m.rebuildAssessment()
+				m.navigatePR(1)
+			case "c":
+				if card := m.currentCard(); card != nil {
+					m.openCommentModal(card, false, "", 0)
+					return m, m.modal.textarea.Focus()
 				}
 			}
 			return m, nil
@@ -138,6 +193,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.focus = focusAssessment
 			m.diffView.Focused = false
 			return m, nil
+		}
+		if msg.String() == "c" {
+			if card := m.currentCard(); card != nil {
+				path, line := m.diffView.CurrentLineTarget()
+				m.openCommentModal(card, path != "", path, line)
+				return m, m.modal.textarea.Focus()
+			}
 		}
 		var cmd tea.Cmd
 		m.diffView, cmd = m.diffView.Update(msg)
@@ -225,6 +287,36 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.rebuildAssessment()
 		}
 		return m, nil
+
+	case commentSubmittedMsg:
+		// Always update the card regardless of which PR is currently on screen.
+		for _, card := range m.cards {
+			if card.PR.Number == msg.prNumber {
+				if msg.err == nil {
+					rc := github.ReviewComment{
+						Author: m.app.CurrentUser,
+						Body:   msg.body,
+						Path:   msg.filePath,
+						Line:   msg.fileLine,
+					}
+					if msg.isInline {
+						card.PR.InlineComments = append(card.PR.InlineComments, rc)
+					} else {
+						card.PR.Comments = append(card.PR.Comments, rc)
+					}
+				}
+				break
+			}
+		}
+		// Update the live diff view only if we're still looking at that PR.
+		if card := m.currentCard(); card != nil && card.PR.Number == msg.prNumber {
+			if msg.err == nil {
+				m.diffView.ConfirmComment(msg.pendingItem)
+			} else {
+				m.diffView.RemoveComment(msg.pendingItem)
+			}
+		}
+		return m, nil
 	}
 
 	return m, nil
@@ -239,6 +331,17 @@ func (m Model) currentCard() *PRCard {
 
 func (m Model) isOwnPR(card *PRCard) bool {
 	return card.PR.Author == m.app.CurrentUser
+}
+
+func (m *Model) navigatePR(delta int) {
+	next := m.current + delta
+	if next < 0 || next >= len(m.cards) {
+		return
+	}
+	m.current = next
+	m.assessmentVP.GotoTop()
+	m.loadCurrentDiff()
+	m.rebuildAssessment()
 }
 
 func (m *Model) loadCurrentDiff() {
@@ -265,9 +368,28 @@ func (m *Model) resizeDiffView() {
 	if w == 0 {
 		w = 80
 	}
-	m.assessmentVP.Width = w - 1 // reserve 1 char for scrollbar
+	m.assessmentVP.Width = w - 1                // reserve 1 char for scrollbar
 	m.assessmentVP.Height = assessmentLines - 1 // -1 for the panel title bar
 	m.rebuildAssessment()
+}
+
+func (m *Model) openCommentModal(card *PRCard, isInline bool, path string, line int) {
+	ta := textarea.New()
+	ta.Placeholder = "Write your comment..."
+	ta.SetWidth(m.width - 4)
+	ta.SetHeight(4)
+	prev := m.focus
+	m.modal = commentModal{
+		active:    true,
+		isInline:  isInline,
+		filePath:  path,
+		fileLine:  line,
+		commitSHA: card.PR.HeadSHA,
+		prevFocus: prev,
+		textarea:  ta,
+	}
+	m.focus = focusModal
+	m.resizeDiffView()
 }
 
 func (m Model) View() string {
@@ -297,9 +419,9 @@ func (m Model) View() string {
 	if m.focus == focusAssessment {
 		var hint string
 		if card := m.currentCard(); card != nil && m.isOwnPR(card) {
-			hint = " m merge  s skip  n/p navigate  j/k scroll  tab to diff"
+			hint = " m merge  c comment  s skip  n/p navigate  j/k scroll  tab to diff"
 		} else {
-			hint = " a approve  r request-changes  s skip  n/p navigate  j/k scroll  tab to diff"
+			hint = " a approve  r request-changes  c comment  s skip  n/p navigate  j/k scroll  tab to diff"
 		}
 		assessmentTitle = panelTitleFocused.Render("Assessment") + dimPanelHint(hint, panelTitleFocused, width)
 	} else {
@@ -307,6 +429,22 @@ func (m Model) View() string {
 	}
 	assessmentContent := lipgloss.JoinHorizontal(lipgloss.Top, m.assessmentVP.View(), renderScrollbar(m.assessmentVP))
 	assessmentPanel := lipgloss.JoinVertical(lipgloss.Left, assessmentTitle, assessmentContent)
+
+	if m.modal.active {
+		title := "  Add comment  (Ctrl+S submit · Esc cancel)"
+		if m.modal.isInline {
+			title = fmt.Sprintf("  Comment on %s:%d  (Ctrl+S submit · Esc cancel)", m.modal.filePath, m.modal.fileLine)
+		}
+		modalContent := lipgloss.JoinVertical(lipgloss.Left,
+			panelTitleFocused.Render(title),
+			lipgloss.NewStyle().Padding(0, 1).Render(m.modal.textarea.View()),
+		)
+		return lipgloss.JoinVertical(lipgloss.Left,
+			assessmentPanel,
+			m.diffView.ViewWithModal(modalContent),
+			m.renderFooter(),
+		)
+	}
 
 	return lipgloss.JoinVertical(lipgloss.Left,
 		assessmentPanel,
@@ -325,7 +463,7 @@ func (m Model) renderFooter() string {
 	if pending > 0 {
 		status += fmt.Sprintf("  %s %d loading", m.spinner.View(), pending)
 	}
-	hints := "q quit  |  tab  |  j/k scroll  |  p/n nav"
+	hints := "q quit  |  tab  |  j/k scroll  |  p/n nav  |  ctrl+n/p nav anywhere"
 	gap := width - lipgloss.Width(status) - lipgloss.Width(hints) - 2
 	if gap < 1 {
 		gap = 1

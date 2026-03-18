@@ -63,6 +63,7 @@ type diffFile struct {
 	name      string
 	collapsed bool
 	rendered  []string
+	lineNums  []int // parallel to rendered; -1 for hunk headers/deletions
 }
 
 type commentItem struct {
@@ -70,6 +71,7 @@ type commentItem struct {
 	path         string // empty for top-level
 	body         string
 	collapsed    bool
+	pending      bool   // true while the API call is in-flight
 	renderedBody string // cached markdown render
 }
 
@@ -297,12 +299,93 @@ func (d DiffView) Update(msg tea.Msg) (DiffView, tea.Cmd) {
 	return d, nil
 }
 
+// AddPendingComment adds a comment to the live diff view marked as pending (API call in-flight).
+// Returns a pointer to the item so the caller can confirm or remove it later.
+// Does not reset scroll position.
+func (d *DiffView) AddPendingComment(c github.ReviewComment) *commentItem {
+	item := &commentItem{
+		author:    c.Author,
+		path:      c.Path,
+		body:      c.Body,
+		collapsed: false,
+		pending:   true,
+	}
+	if c.Path != "" {
+		d.inline = append(d.inline, item)
+	} else {
+		for _, g := range d.commentGroups {
+			if g.author == c.Author {
+				g.comments = append(g.comments, item)
+				g.collapsed = false
+				d.rebuildViewport()
+				return item
+			}
+		}
+		g := &commentGroup{author: c.Author, collapsed: false, comments: []*commentItem{item}}
+		d.commentGroups = append(d.commentGroups, g)
+	}
+	d.rebuildViewport()
+	return item
+}
+
+// ConfirmComment clears the pending flag on a comment item.
+func (d *DiffView) ConfirmComment(item *commentItem) {
+	item.pending = false
+	d.rebuildViewport()
+}
+
+// RemoveComment removes a pending comment (on API error).
+func (d *DiffView) RemoveComment(item *commentItem) {
+	for _, g := range d.commentGroups {
+		for i, c := range g.comments {
+			if c == item {
+				g.comments = append(g.comments[:i], g.comments[i+1:]...)
+				d.rebuildViewport()
+				return
+			}
+		}
+	}
+	for i, c := range d.inline {
+		if c == item {
+			d.inline = append(d.inline[:i], d.inline[i+1:]...)
+			d.rebuildViewport()
+			return
+		}
+	}
+}
+
+// CurrentLineTarget returns the file path and new-file line number at the cursor.
+// Returns ("", 0) if cursor is not on a commentable code line.
+func (d *DiffView) CurrentLineTarget() (path string, line int) {
+	var fileCol *collapsible
+	for i := range d.collapsibles {
+		c := &d.collapsibles[i]
+		if c.kind == kindFile && c.lineIdx <= d.cursorLine {
+			fileCol = c
+		}
+	}
+	if fileCol == nil {
+		return "", 0
+	}
+	f := d.files[fileCol.fileIdx]
+	// offset within the file's rendered lines (skip the file header line itself)
+	offset := d.cursorLine - fileCol.lineIdx - 1
+	if offset < 0 || offset >= len(f.lineNums) {
+		return "", 0
+	}
+	ln := f.lineNums[offset]
+	if ln <= 0 {
+		return "", 0
+	}
+	return f.name, ln
+}
+
 func (d DiffView) View() string {
 	titleStyle := panelTitleBlurred
 	hint := " tab to focus"
 	if d.Focused {
 		titleStyle = panelTitleFocused
-		hint = " ← collapse  → expand  ] next file  [ prev file  tab to exit"
+		hint = " ← collapse  → expand  ] next file  [ prev file  c comment  tab to exit"
 	}
 	width := d.width
 	if width == 0 {
@@ -310,6 +393,78 @@ func (d DiffView) View() string {
 	}
 	title := titleStyle.Render("Diff") + dimPanelHint(hint, titleStyle, width)
 	content := lipgloss.JoinHorizontal(lipgloss.Top, d.viewport.View(), renderScrollbar(d.viewport))
+	return lipgloss.JoinVertical(lipgloss.Left, title, content)
+}
+
+// ViewWithModal renders the diff with modal injected at the cursor position.
+// The total rendered height is identical to View() so the layout doesn't shift.
+func (d DiffView) ViewWithModal(modal string) string {
+	titleStyle := panelTitleBlurred
+	hint := " tab to focus"
+	if d.Focused {
+		titleStyle = panelTitleFocused
+		hint = " ← collapse  → expand  ] next file  [ prev file  c comment  tab to exit"
+	}
+	width := d.width
+	if width == 0 {
+		width = 80
+	}
+	title := titleStyle.Render("Diff") + dimPanelHint(hint, titleStyle, width)
+
+	vpHeight := d.viewport.Height
+
+	// Use viewport.View() as the base: it is guaranteed to be exactly vpHeight
+	// lines, properly padded and cursor-highlighted via syncViewport.
+	vpStr := strings.TrimRight(d.viewport.View(), "\n")
+	vpLines := strings.Split(vpStr, "\n")
+	for len(vpLines) < vpHeight {
+		vpLines = append(vpLines, "")
+	}
+
+	// Strip trailing newline from modal so line-count is unambiguous.
+	modal = strings.TrimRight(modal, "\n")
+	modalLines := strings.Split(modal, "\n")
+	modalH := len(modalLines)
+
+	// Cursor position within the visible viewport
+	cursorInView := d.cursorLine - d.viewport.YOffset
+	if cursorInView < 0 {
+		cursorInView = 0
+	}
+	if cursorInView >= vpHeight {
+		cursorInView = vpHeight - 1
+	}
+
+	// Insert modal after the cursor line; push up if it would overflow.
+	aboveCount := cursorInView + 1
+	belowCount := vpHeight - aboveCount - modalH
+	if belowCount < 0 {
+		aboveCount = vpHeight - modalH
+		if aboveCount < 0 {
+			aboveCount = 0
+		}
+		belowCount = 0
+	}
+
+	// Assemble exactly vpHeight lines.
+	result := make([]string, 0, vpHeight)
+	for i := 0; i < aboveCount; i++ {
+		result = append(result, vpLines[i])
+	}
+	result = append(result, modalLines...)
+	for i := 0; i < belowCount; i++ {
+		result = append(result, vpLines[aboveCount+i])
+	}
+	// Guarantee exact height (handles edge cases where modal is taller than vpHeight).
+	for len(result) < vpHeight {
+		result = append(result, "")
+	}
+	result = result[:vpHeight]
+
+	content := lipgloss.JoinHorizontal(lipgloss.Top,
+		strings.Join(result, "\n"),
+		renderScrollbar(d.viewport),
+	)
 	return lipgloss.JoinVertical(lipgloss.Left, title, content)
 }
 
@@ -340,7 +495,11 @@ func renderComment(c *commentItem, width int, grouped bool, r *glamour.TermRende
 		if c.path != "" {
 			prefix = dimStyle.Render(c.path + ": ")
 		}
-		header = "💬 " + commentAuthorStyle.Render(c.author) + "  " + prefix
+		pendingMark := ""
+		if c.pending {
+			pendingMark = dimStyle.Render(" …posting")
+		}
+		header = "💬 " + commentAuthorStyle.Render(c.author) + pendingMark + "  " + prefix
 	}
 
 	if c.collapsed {

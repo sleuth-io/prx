@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/sleuth-io/prx/internal/ai"
 	"github.com/sleuth-io/prx/internal/github"
 )
@@ -26,7 +27,28 @@ type focus int
 const (
 	focusAssessment focus = iota
 	focusDiff
+	focusModal
 )
+
+type commentModal struct {
+	active    bool
+	isInline  bool
+	filePath  string
+	fileLine  int
+	commitSHA string
+	prevFocus focus
+	textarea  textarea.Model
+}
+
+type commentSubmittedMsg struct {
+	prNumber    int
+	isInline    bool
+	filePath    string
+	fileLine    int
+	body        string
+	pendingItem *commentItem
+	err         error
+}
 
 type prListFetchedMsg struct {
 	rawPRs []map[string]any

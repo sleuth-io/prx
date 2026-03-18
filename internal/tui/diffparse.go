@@ -34,17 +34,20 @@ func parseDiff(raw string) []*diffFile {
 		if name == "" || name == "/dev/null" {
 			name = f.OldName
 		}
+		rendered, lineNums := renderFileDiff(f)
 		result = append(result, &diffFile{
 			name:     name,
-			rendered: renderFileDiff(f),
+			rendered: rendered,
+			lineNums: lineNums,
 		})
 	}
 	return result
 }
 
-func renderFileDiff(f *gitdiff.File) []string {
+func renderFileDiff(f *gitdiff.File) ([]string, []int) {
 	lexer := detectLexer(f.NewName, f.OldName)
 	var lines []string
+	var lineNums []int
 
 	for _, frag := range f.TextFragments {
 		comment := strings.TrimSpace(frag.Comment)
@@ -55,14 +58,21 @@ func renderFileDiff(f *gitdiff.File) []string {
 			hunkHeader = fmt.Sprintf("  line %d", frag.NewPosition)
 		}
 		lines = append(lines, diffHunkStyle.Render(hunkHeader))
-		lines = append(lines, renderFragmentLines(frag.Lines, lexer)...)
+		lineNums = append(lineNums, -1)
+		fl, fn := renderFragmentLines(frag.Lines, lexer, int(frag.NewPosition))
+		lines = append(lines, fl...)
+		lineNums = append(lineNums, fn...)
 	}
-	return lines
+	return lines, lineNums
 }
 
 // renderFragmentLines renders diff lines, pairing equal-count remove/add runs for inline diff.
-func renderFragmentLines(fragLines []gitdiff.Line, lexer chroma.Lexer) []string {
+// startLine is the new-file line number of the first line in this fragment.
+// Returns rendered lines and parallel line numbers (-1 for deletions/hunk headers).
+func renderFragmentLines(fragLines []gitdiff.Line, lexer chroma.Lexer, startLine int) ([]string, []int) {
 	var out []string
+	var nums []int
+	newLine := startLine
 	i := 0
 	for i < len(fragLines) {
 		// Collect consecutive deletions
@@ -85,21 +95,38 @@ func renderFragmentLines(fragLines []gitdiff.Line, lexer chroma.Lexer) []string 
 				old := strings.TrimRight(fragLines[i+n].Line, "\n")
 				new := strings.TrimRight(fragLines[j+n].Line, "\n")
 				out = append(out, renderInlineDiffLines(old, new)...)
+				nums = append(nums, -1, newLine)
+				newLine++
 			}
 			i = k
 		} else if numDels == 0 {
 			// No deletions: emit one line (context or unpaired addition)
-			out = append(out, renderDiffLine(fragLines[i], lexer))
+			l := fragLines[i]
+			out = append(out, renderDiffLine(l, lexer))
+			switch l.Op {
+			case gitdiff.OpAdd, gitdiff.OpContext:
+				nums = append(nums, newLine)
+				newLine++
+			default:
+				nums = append(nums, -1)
+			}
 			i++
 		} else {
 			// Unequal counts: emit all normally
 			for _, l := range fragLines[i:k] {
 				out = append(out, renderDiffLine(l, lexer))
+				switch l.Op {
+				case gitdiff.OpAdd, gitdiff.OpContext:
+					nums = append(nums, newLine)
+					newLine++
+				default: // OpDelete
+					nums = append(nums, -1)
+				}
 			}
 			i = k
 		}
 	}
-	return out
+	return out, nums
 }
 
 // renderInlineDiffLines shows a paired remove/add with character-level change highlighting.

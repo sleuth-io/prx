@@ -65,6 +65,21 @@ func approveCmd(repo string, number int) tea.Cmd {
 	}
 }
 
+func postGlobalCommentCmd(repo string, prNumber int, body string, item *commentItem) tea.Cmd {
+	return func() tea.Msg {
+		err := github.PostComment(repo, prNumber, body)
+		return commentSubmittedMsg{prNumber: prNumber, body: body, pendingItem: item, err: err}
+	}
+}
+
+func postInlineCommentCmd(repo string, prNumber int, sha, path string, line int, body string, item *commentItem) tea.Cmd {
+	return func() tea.Msg {
+		err := github.PostInlineComment(repo, prNumber, sha, path, line, body)
+		return commentSubmittedMsg{prNumber: prNumber, isInline: true,
+			filePath: path, fileLine: line, body: body, pendingItem: item, err: err}
+	}
+}
+
 func requestChangesCmd(repo string, number int, body string) tea.Cmd {
 	return func() tea.Msg {
 		err := github.RequestChanges(repo, number, body)

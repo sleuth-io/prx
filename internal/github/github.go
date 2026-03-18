@@ -35,6 +35,7 @@ type PR struct {
 	FilesChanged       int
 	Diff               string
 	Body               string
+	HeadSHA            string
 	Checks             []CheckStatus
 	Reviews            []ReviewComment // PR-level review submissions (APPROVED, CHANGES_REQUESTED, etc.)
 	InlineComments     []ReviewComment // line-level code comments
@@ -126,7 +127,7 @@ func ListOpenPRsMeta(repo string) ([]map[string]any, error) {
 	out, err := exec.Command("gh", "pr", "list",
 		"--repo", repo,
 		"--state", "open",
-		"--json", "number,title,author,url,createdAt,additions,deletions,files,body,reviewRequests",
+		"--json", "number,title,author,url,createdAt,additions,deletions,files,body,reviewRequests,headRefOid",
 		"--limit", "50",
 	).Output()
 	if err != nil {
@@ -153,11 +154,46 @@ func FetchPRDetails(repo string, raw map[string]any) (*PR, error) {
 		comments       []ReviewComment
 	)
 	wg.Add(5)
-	go func() { defer wg.Done(); diff, _ = getDiff(repo, num) }()
-	go func() { defer wg.Done(); checks, _ = getChecks(repo, num) }()
-	go func() { defer wg.Done(); reviews, _ = getReviews(repo, num) }()
-	go func() { defer wg.Done(); inlineComments, _ = getInlineComments(repo, num) }()
-	go func() { defer wg.Done(); comments, _ = getComments(repo, num) }()
+	go func() {
+		defer wg.Done()
+		var err error
+		diff, err = getDiff(repo, num)
+		if err != nil {
+			logger.Error("PR #%d: getDiff: %v", num, err)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		var err error
+		checks, err = getChecks(repo, num)
+		if err != nil {
+			logger.Error("PR #%d: getChecks: %v", num, err)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		var err error
+		reviews, err = getReviews(repo, num)
+		if err != nil {
+			logger.Error("PR #%d: getReviews: %v", num, err)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		var err error
+		inlineComments, err = getInlineComments(repo, num)
+		if err != nil {
+			logger.Error("PR #%d: getInlineComments: %v", num, err)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		var err error
+		comments, err = getComments(repo, num)
+		if err != nil {
+			logger.Error("PR #%d: getComments: %v", num, err)
+		}
+	}()
 	wg.Wait()
 
 	author := ""
@@ -195,6 +231,7 @@ func FetchPRDetails(repo string, raw map[string]any) (*PR, error) {
 		FilesChanged:       files,
 		Diff:               diff,
 		Body:               body,
+		HeadSHA:            fmt.Sprintf("%v", raw["headRefOid"]),
 		Checks:             checks,
 		Reviews:            reviews,
 		InlineComments:     inlineComments,
@@ -263,17 +300,22 @@ func getReviews(repo string, number int) ([]ReviewComment, error) {
 func getComments(repo string, number int) ([]ReviewComment, error) {
 	out, err := exec.Command("gh", "api",
 		fmt.Sprintf("repos/%s/issues/%d/comments", repo, number),
-		"--jq", `[.[] | {author: .user.login, body: .body, submitted_at: .created_at}]`,
+		"--paginate",
+		"--jq", `.[] | {author: .user.login, body: .body, submitted_at: .created_at}`,
 	).Output()
 	if err != nil || len(strings.TrimSpace(string(out))) == 0 {
 		return nil, nil
 	}
-	var raw []map[string]any
-	if err := json.Unmarshal(out, &raw); err != nil {
-		return nil, nil
-	}
 	var comments []ReviewComment
-	for _, r := range raw {
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == "" {
+			continue
+		}
+		var r map[string]any
+		if err := json.Unmarshal([]byte(line), &r); err != nil {
+			logger.Error("getComments: parse line: %v", err)
+			continue
+		}
 		body := fmt.Sprintf("%v", r["body"])
 		if body == "" || body == "<nil>" {
 			continue
@@ -290,17 +332,22 @@ func getComments(repo string, number int) ([]ReviewComment, error) {
 func getInlineComments(repo string, number int) ([]ReviewComment, error) {
 	out, err := exec.Command("gh", "api",
 		fmt.Sprintf("repos/%s/pulls/%d/comments", repo, number),
-		"--jq", `[.[] | {author: .user.login, body: .body, path: .path, line: (.line // .original_line // 0), submitted_at: .created_at}]`,
+		"--paginate",
+		"--jq", `.[] | {author: .user.login, body: .body, path: .path, line: (.line // .original_line // 0), submitted_at: .created_at}`,
 	).Output()
 	if err != nil || len(strings.TrimSpace(string(out))) == 0 {
 		return nil, nil
 	}
-	var raw []map[string]any
-	if err := json.Unmarshal(out, &raw); err != nil {
-		return nil, nil
-	}
 	var comments []ReviewComment
-	for _, r := range raw {
+	for _, lineStr := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if lineStr == "" {
+			continue
+		}
+		var r map[string]any
+		if err := json.Unmarshal([]byte(lineStr), &r); err != nil {
+			logger.Error("getInlineComments: parse line: %v", err)
+			continue
+		}
 		body := fmt.Sprintf("%v", r["body"])
 		if body == "" || body == "<nil>" {
 			continue
@@ -318,6 +365,21 @@ func getInlineComments(repo string, number int) ([]ReviewComment, error) {
 		})
 	}
 	return comments, nil
+}
+
+func PostComment(repo string, number int, body string) error {
+	return exec.Command("gh", "pr", "comment", fmt.Sprintf("%d", number),
+		"--repo", repo, "--body", body).Run()
+}
+
+func PostInlineComment(repo string, number int, commitSHA, path string, line int, body string) error {
+	payload := fmt.Sprintf(`{"body":%q,"commit_id":%q,"path":%q,"line":%d,"side":"RIGHT"}`,
+		body, commitSHA, path, line)
+	cmd := exec.Command("gh", "api",
+		fmt.Sprintf("repos/%s/pulls/%d/comments", repo, number),
+		"--method", "POST", "--input", "-")
+	cmd.Stdin = strings.NewReader(payload)
+	return cmd.Run()
 }
 
 func ApprovePR(repo string, number int) error {
