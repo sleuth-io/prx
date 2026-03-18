@@ -15,6 +15,11 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Warning: could not init log: %v\n", err)
 	}
 
+	if err := app.CheckDeps(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
 	repoDir := "."
 	if len(os.Args) > 1 {
 		repoDir = os.Args[1]

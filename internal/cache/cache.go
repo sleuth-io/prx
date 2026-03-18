@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sleuth-io/prx/internal/ai"
+	"github.com/sleuth-io/prx/internal/config"
 	"github.com/sleuth-io/prx/internal/logger"
 )
 
@@ -70,11 +71,11 @@ func (c *Cache) save() error {
 	return os.WriteFile(c.path, data, 0644)
 }
 
-// Key returns a cache key that changes when the diff or review comments change.
-// Key returns a cache key that invalidates when the diff or reviews change.
-func Key(repo string, prNumber int, diff, reviews string) string {
+// Key returns a cache key that invalidates when the diff, reviews, or criteria change.
+func Key(repo string, prNumber int, diff, reviews string, criteria []config.Criterion) string {
+	criteriaHash := config.CriteriaHash(criteria)
 	h := sha256.Sum256([]byte(diff + "\x00" + reviews))
-	return fmt.Sprintf("%s#%d#%x", repo, prNumber, h[:8])
+	return fmt.Sprintf("%s#%d#%x#%s", repo, prNumber, h[:8], criteriaHash)
 }
 
 func cachePath() string {

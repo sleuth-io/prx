@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/sleuth-io/prx/internal/config"
 	"github.com/sleuth-io/prx/internal/github"
 	"github.com/sleuth-io/prx/internal/logger"
 )
@@ -16,56 +17,66 @@ type FactorScore struct {
 }
 
 type Assessment struct {
-	BlastRadius  FactorScore `json:"blast_radius"`
-	TestCoverage FactorScore `json:"test_coverage"`
-	Sensitivity  FactorScore `json:"sensitivity"`
-	Complexity   FactorScore `json:"complexity"`
-	ScopeFocus   FactorScore `json:"scope_focus"`
-	RiskSummary  string      `json:"risk_summary"`
-	ReviewNotes  string      `json:"review_notes"`
+	Factors     map[string]FactorScore `json:"factors"`
+	RiskSummary string                 `json:"risk_summary"`
+	ReviewNotes string                 `json:"review_notes"`
 }
 
-const systemPrompt = `You are a senior code reviewer performing risk triage on pull requests.
-Your job is to assess the RISK of each PR — not summarize it.
+func buildSystemPrompt(criteria []config.Criterion) string {
+	var sb strings.Builder
 
-Risk = blast radius in the codebase, not diff size.
-A 1-line change to a critical dependency or core business logic is far riskier than a 500-line change to a dev tool or test file.
+	sb.WriteString(`You are a senior engineer helping a human reviewer prioritize their attention.
+Your job is NOT to review the code — it is to assess how much HUMAN JUDGMENT this PR requires.
+
+Some PRs can be confidently evaluated by automated tools alone. Others fundamentally require
+a human to say "yes, this is the direction we want to go." Score for the latter.
 
 You have tools to explore the codebase. Use them to:
 - Read the full source of modified files (not just diff hunks)
 - Check callers/usages of changed functions or classes
-- Verify test coverage for modified code paths
 - Examine related config, migration, or infrastructure files
 
 Be efficient — only explore when the diff raises questions you can't answer from context alone.
 
-Score each factor from 1 (lowest risk) to 5 (highest risk):
+Score each factor from 1 (lowest — machine can handle) to 5 (highest — needs experienced human):
 
-1. blast_radius: How many parts of the system could break?
-2. test_coverage: How well are these changes covered by tests? Score 5 if critical paths lack tests.
-3. sensitivity: Are security, auth, payments, data models, or migrations touched?
-4. complexity: How subtle are the changes? Could they have non-obvious side effects?
-5. scope_focus: Is this PR focused on one concern, or does it touch many unrelated areas?
+`)
 
+	for i, c := range criteria {
+		fmt.Fprintf(&sb, "%d. %s: %s\n", i+1, c.Name, c.Description)
+	}
+
+	sb.WriteString(`
 Important:
-- Deleting large amounts of business logic is HIGH blast_radius (4-5), not low
-- Failing CI checks should significantly increase test_coverage score
-- Review comments from other developers highlight areas of concern
+- Failing CI checks should increase scores for affected factors
+- Review comments from other developers highlight areas needing human attention
+- A PR with no description or vague intent inherently needs more human judgment
 
 Respond with ONLY a JSON object in this exact format:
 {
-  "blast_radius": {"score": <1-5>, "reason": "<brief reason>"},
-  "test_coverage": {"score": <1-5>, "reason": "<brief reason>"},
-  "sensitivity": {"score": <1-5>, "reason": "<brief reason>"},
-  "complexity": {"score": <1-5>, "reason": "<brief reason>"},
-  "scope_focus": {"score": <1-5>, "reason": "<brief reason>"},
-  "risk_summary": "<one sentence, max 80 chars>",
-  "review_notes": "- <what the PR does>\n- <key risk 1>\n- <key risk 2>"
-}`
+  "factors": {
+`)
 
-func AssessPR(pr *github.PR, repoDir string) (*Assessment, error) { //nolint:unparam
+	for i, c := range criteria {
+		comma := ","
+		if i == len(criteria)-1 {
+			comma = ""
+		}
+		fmt.Fprintf(&sb, `    "%s": {"score": <1-5>, "reason": "<brief reason>"}%s
+`, c.Name, comma)
+	}
+
+	sb.WriteString(`  },
+  "risk_summary": "<one sentence, max 80 chars>",
+  "review_notes": "- <what the PR does>\n- <key concern 1>\n- <key concern 2>"
+}`)
+
+	return sb.String()
+}
+
+func AssessPR(pr *github.PR, repoDir string, criteria []config.Criterion) (*Assessment, error) {
 	logger.Info("assessing PR #%d: %s", pr.Number, pr.Title)
-	prompt := buildPrompt(pr)
+	prompt := buildPrompt(pr, criteria)
 
 	cmd := exec.Command("claude",
 		"-p", prompt,
@@ -76,7 +87,6 @@ func AssessPR(pr *github.PR, repoDir string) (*Assessment, error) { //nolint:unp
 
 	out, err := cmd.Output()
 	if err != nil {
-		// capture stderr for better error messages
 		var stderr string
 		if ee, ok := err.(*exec.ExitError); ok {
 			stderr = string(ee.Stderr)
@@ -108,7 +118,7 @@ func AssessPR(pr *github.PR, repoDir string) (*Assessment, error) { //nolint:unp
 		logger.Error("parsing assessment JSON for PR #%d: %v\nraw: %s", pr.Number, err, jsonStr)
 		return nil, fmt.Errorf("parsing assessment JSON: %w\nraw: %s", err, jsonStr)
 	}
-	logger.Info("PR #%d scored: %.1f", pr.Number, float64(assessment.BlastRadius.Score))
+	logger.Info("PR #%d assessed with %d factors", pr.Number, len(assessment.Factors))
 	return &assessment, nil
 }
 
@@ -132,10 +142,10 @@ func extractJSON(s string) string {
 	return s
 }
 
-func buildPrompt(pr *github.PR) string {
+func buildPrompt(pr *github.PR, criteria []config.Criterion) string {
 	var sb strings.Builder
 
-	sb.WriteString(systemPrompt)
+	sb.WriteString(buildSystemPrompt(criteria))
 	sb.WriteString("\n\n---\n\n")
 	fmt.Fprintf(&sb, "## PR #%d: %s\n", pr.Number, pr.Title)
 	fmt.Fprintf(&sb, "Author: %s\n", pr.Author)
@@ -184,7 +194,11 @@ func buildPrompt(pr *github.PR) string {
 		}
 	}
 
-	fmt.Fprintf(&sb, "\n## Diff\n```\n%s\n```\n", pr.Diff)
+	diff := pr.Diff
+	if len(diff) > 30000 {
+		diff = diff[:30000] + "\n... [diff truncated]"
+	}
+	fmt.Fprintf(&sb, "\n## Diff\n```\n%s\n```\n", diff)
 
 	sb.WriteString("\nUse the tools to explore the codebase if needed. Then respond with the JSON assessment.")
 

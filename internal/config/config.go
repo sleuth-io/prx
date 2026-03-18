@@ -1,46 +1,78 @@
 package config
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
 
+// Criterion defines a single scoring dimension for PR assessment.
+// Criteria are configurable — different teams can define what matters to them.
+type Criterion struct {
+	Name        string  `toml:"name"`
+	Label       string  `toml:"label"`
+	Description string  `toml:"description"`
+	Weight      float64 `toml:"weight"`
+}
+
 type Config struct {
 	Review     ReviewConfig     `toml:"review"`
-	Weights    WeightsConfig    `toml:"weights"`
+	Criteria   []Criterion      `toml:"criteria"`
 	Thresholds ThresholdsConfig `toml:"thresholds"`
 }
 
-type ReviewConfig struct {
-	MaxDiffChars int `toml:"max_diff_chars"`
-}
-
-type WeightsConfig struct {
-	BlastRadius  float64 `toml:"blast_radius"`
-	TestCoverage float64 `toml:"test_coverage"`
-	Sensitivity  float64 `toml:"sensitivity"`
-	Complexity   float64 `toml:"complexity"`
-	ScopeFocus   float64 `toml:"scope_focus"`
-}
+type ReviewConfig struct{}
 
 type ThresholdsConfig struct {
 	ApproveBelow float64 `toml:"approve_below"`
 	ReviewAbove  float64 `toml:"review_above"`
 }
 
+// DefaultCriteria returns the built-in scoring dimensions, oriented around
+// "how much human judgment does this PR require?" rather than code quality.
+func DefaultCriteria() []Criterion {
+	return []Criterion{
+		{
+			Name:        "blast_radius",
+			Label:       "Blast",
+			Description: "How much of the system could break? Consider business impact: internal tooling vs external-facing vs revenue-critical. A 1-line change to checkout is higher blast than 500 lines of test changes. Deleting large amounts of business logic is HIGH (4-5).",
+			Weight:      1.0,
+		},
+		{
+			Name:        "intent_clarity",
+			Label:       "Intent",
+			Description: "Is the WHY clear? Score high if the PR lacks a description, has vague intent, or the code doesn't clearly map to a stated goal. A reviewer shouldn't have to guess what problem this solves.",
+			Weight:      1.0,
+		},
+		{
+			Name:        "irreversibility",
+			Label:       "Irreversible",
+			Description: "How hard is this to undo? Migrations, public API changes, data model shifts, deleted business logic score high. Reversible changes (feature-flagged, additive-only, behind toggles) score low.",
+			Weight:      1.0,
+		},
+		{
+			Name:        "domain_knowledge",
+			Label:       "Domain",
+			Description: "How much implicit or tribal knowledge is needed to review this safely? Changes to areas with unwritten rules, complex business logic, or historical gotchas score high. Pure utility code scores low.",
+			Weight:      1.0,
+		},
+		{
+			Name:        "novelty",
+			Label:       "Novelty",
+			Description: "Is this introducing new patterns, new dependencies, or touching unfamiliar territory? First-time contributors to sensitive areas, new architectural patterns, or novel integrations score high. Routine changes in well-trodden paths score low.",
+			Weight:      1.0,
+		},
+	}
+}
+
 func defaults() Config {
 	return Config{
-		Review: ReviewConfig{MaxDiffChars: 30000},
-		Weights: WeightsConfig{
-			BlastRadius:  1.0,
-			TestCoverage: 1.0,
-			Sensitivity:  1.0,
-			Complexity:   1.0,
-			ScopeFocus:   1.0,
-		},
+		Review:   ReviewConfig{},
+		Criteria: DefaultCriteria(),
 		Thresholds: ThresholdsConfig{
 			ApproveBelow: 2.0,
 			ReviewAbove:  3.5,
@@ -59,7 +91,23 @@ func Load() (Config, error) {
 	if _, err := toml.DecodeFile(path, &cfg); err != nil {
 		return cfg, fmt.Errorf("parsing config %s: %w", path, err)
 	}
+
+	// If criteria were provided in config, use them; otherwise keep defaults.
+	// TOML array-of-tables appends, so an empty [[criteria]] section won't
+	// accidentally clear the defaults — only explicit entries replace them.
+
 	return cfg, nil
+}
+
+// CriteriaHash returns a short hash of the criteria configuration.
+// Used for cache invalidation when criteria change.
+func CriteriaHash(criteria []Criterion) string {
+	var sb strings.Builder
+	for _, c := range criteria {
+		fmt.Fprintf(&sb, "%s|%s|%.2f\n", c.Name, c.Description, c.Weight)
+	}
+	h := sha256.Sum256([]byte(sb.String()))
+	return fmt.Sprintf("%x", h[:4])
 }
 
 func defaultPath() string {
