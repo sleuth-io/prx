@@ -7,3 +7,4 @@ dist/
 node_modules/
 frontend/dist/
 .claude/settings.local.json
+.claude/skills/
