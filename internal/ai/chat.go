@@ -87,6 +87,17 @@ func BuildChatPrompt(pr *github.PR, assessment *Assessment, history []ChatMessag
 		}
 	}
 
+	if len(pr.Comments) > 0 {
+		sb.WriteString("\n## PR Comments\n")
+		for _, c := range pr.Comments {
+			body := c.Body
+			if len(body) > 300 {
+				body = body[:300] + "..."
+			}
+			fmt.Fprintf(&sb, "- **%s**: %s\n", c.Author, body)
+		}
+	}
+
 	// Diff (truncated)
 	diff := pr.Diff
 	if len(diff) > 30000 {
