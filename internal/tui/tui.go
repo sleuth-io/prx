@@ -40,10 +40,11 @@ type Model struct {
 	diffView     DiffView
 	assessmentVP viewport.Model
 	spinner      spinner.Model
-	modal        commentModal
-	err          error
-	width        int
-	height       int
+	modal         commentModal
+	actionStatus  string // e.g. "Merging…", "Approving…" — shown in footer while action runs
+	err           error
+	width         int
+	height        int
 }
 
 func New(a *app.App) Model {
@@ -168,14 +169,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.assessmentVP.ScrollUp(1)
 			case "a":
 				if card := m.currentCard(); card != nil && !card.Scoring && !m.isOwnPR(card) {
+					m.actionStatus = "Approving…"
 					return m, approveCmd(m.app.Repo, card.PR.Number)
 				}
 			case "m":
 				if card := m.currentCard(); card != nil && !card.Scoring && m.isOwnPR(card) {
+					m.actionStatus = "Merging…"
 					return m, mergeCmd(m.app.Repo, card.PR.Number)
 				}
 			case "r":
 				if card := m.currentCard(); card != nil && !card.Scoring && card.Assessment != nil && !m.isOwnPR(card) {
+					m.actionStatus = "Requesting changes…"
 					return m, requestChangesCmd(m.app.Repo, card.PR.Number, card.Assessment.ReviewNotes)
 				}
 			case "s":
@@ -281,6 +285,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case actionDoneMsg:
+		m.actionStatus = ""
 		if msg.err == nil && m.current < len(m.cards)-1 {
 			m.current++
 			m.loadCurrentDiff()
@@ -459,8 +464,9 @@ func (m Model) renderFooter() string {
 		width = 80
 	}
 	status := fmt.Sprintf("prx  PR %d/%d", m.current+1, len(m.cards))
-	pending := m.fetching + m.scoring
-	if pending > 0 {
+	if m.actionStatus != "" {
+		status += fmt.Sprintf("  %s %s", m.spinner.View(), m.actionStatus)
+	} else if pending := m.fetching + m.scoring; pending > 0 {
 		status += fmt.Sprintf("  %s %d loading", m.spinner.View(), pending)
 	}
 	hints := "q quit  |  tab  |  j/k scroll  |  p/n nav  |  ctrl+n/p nav anywhere"
