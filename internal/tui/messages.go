@@ -2,9 +2,21 @@ package tui
 
 import (
 	"github.com/charmbracelet/bubbles/textarea"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/sleuth-io/prx/internal/ai"
 	"github.com/sleuth-io/prx/internal/github"
 )
+
+// SetProgramMsg delivers the tea.Program reference for streaming sends.
+type SetProgramMsg struct {
+	Program *tea.Program
+}
+
+// chatMessage is a single message in a PR chat conversation.
+type chatMessage struct {
+	role    string // "user" or "assistant"
+	content string
+}
 
 // PRCard is a PR — may be in-progress (Scoring=true) or fully assessed.
 type PRCard struct {
@@ -14,7 +26,11 @@ type PRCard struct {
 	Verdict       string
 	Scoring       bool
 	ScoringErr    error
-	parsedFiles   []*diffFile // pre-parsed diff files (nil until ready)
+	parsedFiles   []*diffFile    // pre-parsed diff files (nil until ready)
+	chatMessages  []chatMessage    // in-memory chat history per PR
+	chatContext   *ai.DiffContext  // file/line the reviewer was looking at when chat opened
+	chatCancel    func()           // cancels the running claude process (nil if not streaming)
+	worktreePath  string           // git worktree path for chat (empty until created)
 }
 
 type prDiffParsedMsg struct {
@@ -28,6 +44,7 @@ const (
 	focusAssessment focus = iota
 	focusDiff
 	focusModal
+	focusChat
 )
 
 type commentModal struct {
@@ -72,4 +89,26 @@ type actionDoneMsg struct {
 	pr     int
 	action string
 	err    error
+}
+
+type chatStatusMsg struct {
+	prNumber int
+	status   string
+}
+
+type chatTokenMsg struct {
+	prNumber int
+	token    string
+}
+
+type chatDoneMsg struct {
+	prNumber     int
+	fullResponse string
+	err          error
+}
+
+type chatWorktreeReadyMsg struct {
+	prNumber int
+	path     string
+	err      error
 }

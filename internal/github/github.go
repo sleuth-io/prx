@@ -36,6 +36,7 @@ type PR struct {
 	Diff               string
 	Body               string
 	HeadSHA            string
+	HeadRefName        string
 	Checks             []CheckStatus
 	Reviews            []ReviewComment // PR-level review submissions (APPROVED, CHANGES_REQUESTED, etc.)
 	InlineComments     []ReviewComment // line-level code comments
@@ -127,7 +128,7 @@ func ListOpenPRsMeta(repo string) ([]map[string]any, error) {
 	out, err := exec.Command("gh", "pr", "list",
 		"--repo", repo,
 		"--state", "open",
-		"--json", "number,title,author,url,createdAt,additions,deletions,files,body,reviewRequests,headRefOid",
+		"--json", "number,title,author,url,createdAt,additions,deletions,files,body,reviewRequests,headRefOid,headRefName",
 		"--limit", "50",
 	).Output()
 	if err != nil {
@@ -232,6 +233,7 @@ func FetchPRDetails(repo string, raw map[string]any) (*PR, error) {
 		Diff:               diff,
 		Body:               body,
 		HeadSHA:            fmt.Sprintf("%v", raw["headRefOid"]),
+		HeadRefName:        fmt.Sprintf("%v", raw["headRefName"]),
 		Checks:             checks,
 		Reviews:            reviews,
 		InlineComments:     inlineComments,

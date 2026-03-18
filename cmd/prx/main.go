@@ -33,6 +33,9 @@ func main() {
 
 	m := tui.New(a)
 	p := tea.NewProgram(m, tea.WithAltScreen())
+	go func() {
+		p.Send(tui.SetProgramMsg{Program: p})
+	}()
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)

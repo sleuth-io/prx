@@ -1,8 +1,13 @@
 package tui
 
 import (
+	"bufio"
+	"context"
+	"encoding/json"
 	"fmt"
 	"math"
+	"math/rand"
+	"os/exec"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -124,4 +129,165 @@ func computeVerdict(score float64, app *app.App) string {
 		return "reject"
 	}
 	return "review"
+}
+
+func createWorktreeCmd(repoDir string, headRefName string, prNumber int) tea.Cmd {
+	return func() tea.Msg {
+		logger.Info("worktree: fetching branch %s for PR #%d", headRefName, prNumber)
+		// Fetch the PR branch so the ref exists locally
+		fetchCmd := exec.Command("git", "fetch", "origin", headRefName)
+		fetchCmd.Dir = repoDir
+		if out, err := fetchCmd.CombinedOutput(); err != nil {
+			logger.Error("fetch for PR #%d branch %s: %v\n%s", prNumber, headRefName, err, string(out))
+			return chatWorktreeReadyMsg{prNumber: prNumber, err: fmt.Errorf("git fetch: %w\n%s", err, string(out))}
+		}
+		logger.Info("worktree: fetch done for PR #%d, creating worktree", prNumber)
+
+		path := fmt.Sprintf("/tmp/prx-%d-%d", prNumber, rand.Intn(100000))
+		cmd := exec.Command("git", "worktree", "add", path, "FETCH_HEAD", "--detach")
+		cmd.Dir = repoDir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			logger.Error("worktree create for PR #%d: %v\n%s", prNumber, err, string(out))
+			return chatWorktreeReadyMsg{prNumber: prNumber, err: fmt.Errorf("git worktree add: %w\n%s", err, string(out))}
+		}
+		logger.Info("worktree created for PR #%d at %s", prNumber, path)
+		return chatWorktreeReadyMsg{prNumber: prNumber, path: path}
+	}
+}
+
+func removeWorktreeCmd(repoDir, path string) tea.Cmd {
+	return func() tea.Msg {
+		cmd := exec.Command("git", "worktree", "remove", path, "--force")
+		cmd.Dir = repoDir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			logger.Error("worktree remove %s: %v\n%s", path, err, string(out))
+		} else {
+			logger.Info("worktree removed: %s", path)
+		}
+		return nil
+	}
+}
+
+func sendChatCmd(ctx context.Context, worktreePath string, pr *github.PR, assessment *ai.Assessment, messages []chatMessage, diffCtx *ai.DiffContext, program *tea.Program) tea.Cmd {
+	return func() tea.Msg {
+		// Convert to ai.ChatMessage
+		history := make([]ai.ChatMessage, len(messages))
+		for i, m := range messages {
+			history[i] = ai.ChatMessage{Role: m.role, Content: m.content}
+		}
+
+		prompt := ai.BuildChatPrompt(pr, assessment, history, diffCtx)
+		cmd := exec.CommandContext(ctx, "claude",
+			"-p", prompt,
+			"--output-format", "stream-json",
+			"--verbose",
+			"--allowedTools", "Read,Glob,Grep",
+			"--strict-mcp-config",
+			"--no-session-persistence",
+		)
+		cmd.Dir = worktreePath
+
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			return chatDoneMsg{prNumber: pr.Number, err: fmt.Errorf("stdout pipe: %w", err)}
+		}
+		var stderrBuf strings.Builder
+		cmd.Stderr = &stderrBuf
+		if err := cmd.Start(); err != nil {
+			return chatDoneMsg{prNumber: pr.Number, err: fmt.Errorf("start claude: %w", err)}
+		}
+		var fullResponse strings.Builder
+		// Track what we've already sent as tokens so we can send only deltas
+		prevLen := 0
+		scanner := bufio.NewScanner(stdout)
+		scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
+		sentInit := false
+		for scanner.Scan() {
+			line := scanner.Text()
+			if line == "" {
+				continue
+			}
+			var event map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(line), &event); err != nil {
+				logger.Debug("chat stream parse: %v", err)
+				continue
+			}
+			var eventType string
+			if raw, ok := event["type"]; ok {
+				_ = json.Unmarshal(raw, &eventType)
+			}
+			logger.Debug("chat event: %s", eventType)
+
+			switch eventType {
+			case "system":
+				if !sentInit {
+					sentInit = true
+					program.Send(chatStatusMsg{prNumber: pr.Number, status: "Thinking..."})
+				}
+			case "assistant":
+				// Extract text from message.content[].text
+				var msg struct {
+					Message struct {
+						Content []struct {
+							Type string `json:"type"`
+							Text string `json:"text"`
+						} `json:"content"`
+					} `json:"message"`
+				}
+				if err := json.Unmarshal([]byte(line), &msg); err != nil {
+					continue
+				}
+				var text string
+				for _, block := range msg.Message.Content {
+					if block.Type == "text" {
+						text += block.Text
+					}
+				}
+				if text != "" {
+					fullResponse.Reset()
+					fullResponse.WriteString(text)
+					// Send only the new delta
+					if len(text) > prevLen {
+						delta := text[prevLen:]
+						prevLen = len(text)
+						program.Send(chatTokenMsg{prNumber: pr.Number, token: delta})
+					}
+				}
+			case "result":
+				var result struct {
+					Result  string `json:"result"`
+					IsError bool   `json:"is_error"`
+				}
+				_ = json.Unmarshal([]byte(line), &result)
+				if result.IsError {
+					return chatDoneMsg{prNumber: pr.Number, err: fmt.Errorf("claude: %s", result.Result)}
+				}
+				if result.Result != "" && fullResponse.Len() == 0 {
+					fullResponse.WriteString(result.Result)
+					program.Send(chatTokenMsg{prNumber: pr.Number, token: result.Result})
+				}
+			}
+		}
+		if scanErr := scanner.Err(); scanErr != nil {
+			logger.Error("chat scanner error for PR #%d: %v", pr.Number, scanErr)
+		}
+
+		if err := cmd.Wait(); err != nil {
+			if ctx.Err() != nil {
+				// User cancelled
+				return chatDoneMsg{prNumber: pr.Number, fullResponse: fullResponse.String()}
+			}
+			logger.Error("chat claude exit for PR #%d: %v\nstderr: %s", pr.Number, err, stderrBuf.String())
+			if fullResponse.Len() == 0 {
+				errMsg := stderrBuf.String()
+				if errMsg == "" {
+					errMsg = err.Error()
+				}
+				return chatDoneMsg{prNumber: pr.Number, err: fmt.Errorf("claude chat failed: %s", errMsg)}
+			}
+		}
+
+		return chatDoneMsg{prNumber: pr.Number, fullResponse: fullResponse.String()}
+	}
 }

@@ -35,7 +35,7 @@ func checkGH() error {
 func checkClaude() error {
 	path, err := exec.LookPath("claude")
 	if err != nil {
-		return fmt.Errorf("Claude Code CLI (claude) not found in PATH.\nInstall it: https://docs.anthropic.com/en/docs/claude-code/overview")
+		return fmt.Errorf("claude Code CLI (claude) not found in PATH.\nInstall it: https://docs.anthropic.com/en/docs/claude-code/overview")
 	}
 	_ = path
 
@@ -45,7 +45,7 @@ func checkClaude() error {
 	out, err := exec.Command("claude", "--version").CombinedOutput()
 	if err != nil {
 		msg := strings.TrimSpace(string(out))
-		return fmt.Errorf("Claude Code CLI found but not working.\nCheck your installation: https://docs.anthropic.com/en/docs/claude-code/overview\n\n%s", msg)
+		return fmt.Errorf("claude Code CLI found but not working.\nCheck your installation: https://docs.anthropic.com/en/docs/claude-code/overview\n\n%s", msg)
 	}
 	return nil
 }

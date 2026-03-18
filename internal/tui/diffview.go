@@ -380,6 +380,11 @@ func (d *DiffView) CurrentLineTarget() (path string, line int) {
 	return f.name, ln
 }
 
+// ViewContent renders the diff body without a title bar (for tabbed layout).
+func (d DiffView) ViewContent() string {
+	return lipgloss.JoinHorizontal(lipgloss.Top, d.viewport.View(), renderScrollbar(d.viewport))
+}
+
 func (d DiffView) View() string {
 	titleStyle := panelTitleBlurred
 	hint := " tab to focus"
@@ -392,8 +397,7 @@ func (d DiffView) View() string {
 		width = 80
 	}
 	title := titleStyle.Render("Diff") + dimPanelHint(hint, titleStyle, width)
-	content := lipgloss.JoinHorizontal(lipgloss.Top, d.viewport.View(), renderScrollbar(d.viewport))
-	return lipgloss.JoinVertical(lipgloss.Left, title, content)
+	return lipgloss.JoinVertical(lipgloss.Left, title, d.ViewContent())
 }
 
 // ViewWithModal renders the diff with modal injected at the cursor position.
@@ -468,8 +472,12 @@ func (d DiffView) ViewWithModal(modal string) string {
 	return lipgloss.JoinVertical(lipgloss.Left, title, content)
 }
 
-func dimPanelHint(hint string, titleStyle lipgloss.Style, width int) string {
-	titleWidth := lipgloss.Width(titleStyle.Render("Diff"))
+func dimPanelHint(hint string, titleStyle lipgloss.Style, width int, titleTexts ...string) string {
+	titleText := "Diff"
+	if len(titleTexts) > 0 {
+		titleText = titleTexts[0]
+	}
+	titleWidth := lipgloss.Width(titleStyle.Render(titleText))
 	remaining := width - titleWidth
 	if remaining <= 0 {
 		return ""

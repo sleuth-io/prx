@@ -15,10 +15,9 @@ var (
 	verdictReview  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("220"))
 	verdictReject  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("196"))
 
-	dimStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
-	boldStyle    = lipgloss.NewStyle().Bold(true)
-	factorStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("111"))
-	sectionStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("99"))
+	dimStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
+	boldStyle   = lipgloss.NewStyle().Bold(true)
+	factorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("111"))
 )
 
 func (m *Model) rebuildAssessment() {
@@ -110,17 +109,6 @@ func (m Model) buildAssessmentContent() string {
 	return lipgloss.JoinVertical(lipgloss.Left, cols, strings.Join(below, "\n"))
 }
 
-func truncate(s string, max int) string {
-	// Strip ANSI before measuring, but we're working with plain strings here so rune-count is fine
-	runes := []rune(s)
-	if len(runes) <= max {
-		return s
-	}
-	if max <= 1 {
-		return "…"
-	}
-	return string(runes[:max-1]) + "…"
-}
 
 func renderReviewStatus(pr *github.PR) string {
 	latest := map[string]string{}
@@ -144,9 +132,10 @@ func renderReviewStatus(pr *github.PR) string {
 	var changesCount, pendingCount int
 
 	for author, state := range latest {
-		if state == "APPROVED" {
+		switch state {
+		case "APPROVED":
 			parts = append(parts, verdictApprove.Render("✓ "+author))
-		} else if state == "CHANGES_REQUESTED" {
+		case "CHANGES_REQUESTED":
 			changesCount++
 		}
 	}

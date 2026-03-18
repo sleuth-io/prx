@@ -158,7 +158,7 @@ func renderInlineDiffLines(old, new string) []string {
 func withLineBg(s string, hex string) string {
 	hex = strings.TrimPrefix(hex, "#")
 	var r, g, b int
-	fmt.Sscanf(hex, "%02x%02x%02x", &r, &g, &b)
+	_, _ = fmt.Sscanf(hex, "%02x%02x%02x", &r, &g, &b)
 	bg := fmt.Sprintf("\x1b[48;2;%d;%d;%dm", r, g, b)
 	return bg + strings.ReplaceAll(s, "\x1b[0m", "\x1b[0m"+bg)
 }

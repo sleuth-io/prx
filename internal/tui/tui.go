@@ -9,18 +9,15 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"context"
+
+	"github.com/sleuth-io/prx/internal/ai"
 	"github.com/sleuth-io/prx/internal/app"
 	"github.com/sleuth-io/prx/internal/github"
 	"github.com/sleuth-io/prx/internal/logger"
 )
 
 var (
-	headerStyle = lipgloss.NewStyle().
-			Background(lipgloss.Color("62")).
-			Foreground(lipgloss.Color("230")).
-			Padding(0, 1).
-			Bold(true)
-
 	footerStyle = lipgloss.NewStyle().
 			Background(lipgloss.Color("237")).
 			Foreground(lipgloss.Color("250")).
@@ -38,10 +35,13 @@ type Model struct {
 	current      int
 	focus        focus
 	diffView     DiffView
+	chatView     ChatView
+	chatActive   bool // true when chat panel is shown instead of diff
 	assessmentVP viewport.Model
 	spinner      spinner.Model
 	modal         commentModal
 	actionStatus  string // e.g. "Merging…", "Approving…" — shown in footer while action runs
+	program       *tea.Program // for streaming chat sends
 	err           error
 	width         int
 	height        int
@@ -55,9 +55,11 @@ func New(a *app.App) Model {
 		app:          a,
 		spinner:      s,
 		diffView:     NewDiffView(80, 20),
+		chatView:     NewChatView(80, 20),
 		assessmentVP: viewport.New(80, assessmentLines),
 	}
 }
+
 
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(m.spinner.Tick, fetchPRListCmd(m.app.Repo))
@@ -65,6 +67,10 @@ func (m Model) Init() tea.Cmd {
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+
+	case SetProgramMsg:
+		m.program = msg.Program
+		return m, nil
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -82,6 +88,37 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.diffView.Focused = (prev == focusDiff)
 				m.resizeDiffView()
 				return m, nil
+			case "enter":
+				// Enter sends (same as ctrl+s); alt+enter goes to default/textarea for newline
+				body := strings.TrimSpace(m.modal.textarea.Value())
+				if body == "" {
+					return m, nil
+				}
+				card := m.currentCard()
+				if card == nil {
+					return m, nil
+				}
+				isInline := m.modal.isInline
+				filePath := m.modal.filePath
+				fileLine := m.modal.fileLine
+				commitSHA := m.modal.commitSHA
+				prev := m.modal.prevFocus
+				rc := github.ReviewComment{
+					Author: m.app.CurrentUser,
+					Body:   body,
+					Path:   filePath,
+					Line:   fileLine,
+				}
+				pendingItem := m.diffView.AddPendingComment(rc)
+				m.modal = commentModal{}
+				m.focus = prev
+				m.diffView.Focused = (prev == focusDiff)
+				m.resizeDiffView()
+				if isInline {
+					return m, postInlineCommentCmd(m.app.Repo, card.PR.Number,
+						commitSHA, filePath, fileLine, body, pendingItem)
+				}
+				return m, postGlobalCommentCmd(m.app.Repo, card.PR.Number, body, pendingItem)
 			case "ctrl+s":
 				body := strings.TrimSpace(m.modal.textarea.Value())
 				if body == "" {
@@ -123,22 +160,57 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		switch msg.String() {
-		case "q", "ctrl+c":
-			return m, tea.Quit
+		case "q":
+			if m.focus == focusChat {
+				break // let q go to textarea
+			}
+			return m, m.cleanupWorktrees()
+		case "ctrl+c":
+			return m, m.cleanupWorktrees()
+		case "?":
+			if m.focus == focusChat {
+				// Let ? go to the textarea input
+				break
+			}
+			return m, m.activateChat()
 		case "tab":
-			if m.focus == focusAssessment {
-				m.focus = focusDiff
-				m.diffView.Focused = true
+			if m.chatActive {
+				// Cycle: assessment -> diff -> chat -> assessment
+				switch m.focus {
+				case focusAssessment:
+					m.focus = focusDiff
+					m.diffView.Focused = true
+					m.chatView.Focused = false
+					m.chatView.Blur()
+				case focusDiff:
+					m.focus = focusChat
+					m.diffView.Focused = false
+					m.chatView.Focused = true
+					return m, m.chatView.Focus()
+				default: // focusChat
+					m.focus = focusAssessment
+					m.chatView.Focused = false
+					m.chatView.Blur()
+				}
 			} else {
-				m.focus = focusAssessment
-				m.diffView.Focused = false
+				if m.focus == focusAssessment {
+					m.focus = focusDiff
+					m.diffView.Focused = true
+				} else {
+					m.focus = focusAssessment
+					m.diffView.Focused = false
+				}
 			}
 			return m, nil
 		case "left":
-			m.diffView.CollapseCurrentFile()
+			if m.focus == focusDiff {
+				m.diffView.CollapseCurrentFile()
+			}
 			return m, nil
 		case "right":
-			m.diffView.ExpandCurrentFile()
+			if m.focus == focusDiff {
+				m.diffView.ExpandCurrentFile()
+			}
 			return m, nil
 		}
 
@@ -152,6 +224,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// Chat focus: forward keys to chat view
+		if m.focus == focusChat {
+			switch msg.String() {
+			case "esc":
+				if m.chatView.streaming {
+					// Cancel the running request
+					if card := m.currentCard(); card != nil && card.chatCancel != nil {
+						card.chatCancel()
+						card.chatCancel = nil
+					}
+					return m, nil
+				}
+				// Not streaming — close chat
+				m.chatActive = false
+				m.chatView.Focused = false
+				m.chatView.Blur()
+				m.focus = focusDiff
+				m.diffView.Focused = true
+				return m, nil
+			case "enter":
+				// Enter sends; alt+enter falls through to textarea for newline
+				return m, m.sendChatMessage()
+			}
+			var cmd tea.Cmd
+			m.chatView, cmd = m.chatView.Update(msg)
+			return m, cmd
+		}
+
 		if m.focus == focusAssessment {
 			switch msg.String() {
 			case "n":
@@ -162,6 +262,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.assessmentVP.AtBottom() {
 					m.focus = focusDiff
 					m.diffView.Focused = true
+					m.chatView.Focused = false
+					m.chatView.Blur()
 				} else {
 					m.assessmentVP.ScrollDown(1)
 				}
@@ -212,6 +314,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
+		if m.chatView.streaming || m.chatView.status != "" {
+			m.chatView.spinnerView = m.spinner.View()
+			m.chatView.rebuildViewport()
+		}
 		return m, cmd
 
 	case prListFetchedMsg:
@@ -322,6 +428,67 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+
+	case chatWorktreeReadyMsg:
+		m.chatView.status = ""
+		m.chatView.rebuildViewport()
+		for _, card := range m.cards {
+			if card.PR.Number == msg.prNumber {
+				if msg.err != nil {
+					logger.Error("worktree error for PR #%d: %v", msg.prNumber, msg.err)
+				} else {
+					card.worktreePath = msg.path
+				}
+				break
+			}
+		}
+		// If this is the current PR and we were waiting for worktree to send a chat, dispatch it now
+		if card := m.currentCard(); card != nil && card.PR.Number == msg.prNumber && msg.err == nil {
+			if m.chatActive && m.chatView.streaming {
+				ctx, cancel := context.WithCancel(context.Background())
+				card.chatCancel = cancel
+				return m, sendChatCmd(ctx, msg.path, card.PR, card.Assessment, card.chatMessages, card.chatContext, m.program)
+			}
+		}
+		return m, nil
+
+	case chatStatusMsg:
+		if card := m.currentCard(); card != nil && card.PR.Number == msg.prNumber && m.chatActive {
+			m.chatView.status = msg.status
+			m.chatView.rebuildViewport()
+		}
+		return m, nil
+
+	case chatTokenMsg:
+		if card := m.currentCard(); card != nil && card.PR.Number == msg.prNumber && m.chatActive {
+			m.chatView.AppendToken(msg.token)
+		}
+		return m, nil
+
+	case chatDoneMsg:
+		for _, card := range m.cards {
+			if card.PR.Number == msg.prNumber {
+				card.chatCancel = nil
+				if msg.err != nil {
+					logger.Error("chat error for PR #%d: %v", msg.prNumber, msg.err)
+					card.chatMessages = append(card.chatMessages, chatMessage{
+						role:    "assistant",
+						content: fmt.Sprintf("Error: %v", msg.err),
+					})
+				} else if msg.fullResponse != "" {
+					card.chatMessages = append(card.chatMessages, chatMessage{
+						role:    "assistant",
+						content: msg.fullResponse,
+					})
+				}
+				break
+			}
+		}
+		if card := m.currentCard(); card != nil && card.PR.Number == msg.prNumber && m.chatActive {
+			m.chatView.FinishStream(msg.fullResponse)
+			m.chatView.SetMessages(card.chatMessages)
+		}
+		return m, nil
 	}
 
 	return m, nil
@@ -347,6 +514,14 @@ func (m *Model) navigatePR(delta int) {
 	m.assessmentVP.GotoTop()
 	m.loadCurrentDiff()
 	m.rebuildAssessment()
+	// If chat is active, update chat view with new PR's messages
+	if m.chatActive {
+		if card := m.currentCard(); card != nil {
+			m.chatView.SetMessages(card.chatMessages)
+			m.chatView.streaming = false
+			m.chatView.streamContent = ""
+		}
+	}
 }
 
 func (m *Model) loadCurrentDiff() {
@@ -369,6 +544,7 @@ func (m *Model) resizeDiffView() {
 		diffH = 4
 	}
 	m.diffView.SetSize(m.width, diffH)
+	m.chatView.SetSize(m.width, diffH)
 	w := m.width
 	if w == 0 {
 		w = 80
@@ -395,6 +571,112 @@ func (m *Model) openCommentModal(card *PRCard, isInline bool, path string, line 
 	}
 	m.focus = focusModal
 	m.resizeDiffView()
+}
+
+func (m *Model) activateChat() tea.Cmd {
+	card := m.currentCard()
+	if card == nil {
+		return nil
+	}
+
+	// Capture diff context from current cursor position
+	path, line := m.diffView.CurrentLineTarget()
+	if path != "" {
+		card.chatContext = &ai.DiffContext{File: path, Line: line}
+	} else {
+		card.chatContext = nil
+	}
+
+	m.chatActive = true
+	m.focus = focusChat
+	m.diffView.Focused = false
+	m.chatView.Focused = true
+	m.chatView.SetContext(card.chatContext)
+	m.chatView.welcomeText = buildChatWelcome(card, card.chatContext)
+	m.chatView.SetMessages(card.chatMessages)
+	m.resizeDiffView()
+
+	var cmds []tea.Cmd
+	cmds = append(cmds, m.chatView.Focus())
+
+	// Create worktree lazily if not already created
+	if card.worktreePath == "" {
+		m.chatView.status = "Creating worktree..."
+		cmds = append(cmds, createWorktreeCmd(m.app.RepoDir, card.PR.HeadRefName, card.PR.Number))
+	}
+
+	return tea.Batch(cmds...)
+}
+
+func buildChatWelcome(card *PRCard, ctx *ai.DiffContext) string {
+	var sb strings.Builder
+
+	if card.Assessment != nil {
+		// Find the highest-scoring factor, or any above 3
+		var topName, topReason string
+		topScore := 0
+		for name, f := range card.Assessment.Factors {
+			if f.Score > topScore {
+				topScore = f.Score
+				topName = name
+				topReason = f.Reason
+			}
+		}
+		if topScore >= 3 {
+			fmt.Fprintf(&sb, "Highest risk: %s (%d/5) — %s\n\n", topName, topScore, topReason)
+		}
+	}
+
+	if ctx != nil && ctx.File != "" {
+		if ctx.Line > 0 {
+			fmt.Fprintf(&sb, "You're looking at %s:%d. ", ctx.File, ctx.Line)
+		} else {
+			fmt.Fprintf(&sb, "You're looking at %s. ", ctx.File)
+		}
+	}
+
+	sb.WriteString("What questions do you have?")
+	return sb.String()
+}
+
+func (m *Model) sendChatMessage() tea.Cmd {
+	card := m.currentCard()
+	if card == nil {
+		return nil
+	}
+	body := m.chatView.InputValue()
+	if body == "" {
+		return nil
+	}
+	if m.chatView.streaming {
+		return nil
+	}
+
+	m.chatView.ResetInput()
+	card.chatMessages = append(card.chatMessages, chatMessage{role: "user", content: body})
+	m.chatView.SetMessages(card.chatMessages)
+	m.chatView.streaming = true
+	m.chatView.status = "Starting Claude..."
+
+	// If worktree is ready, send immediately; otherwise wait for worktreeReady
+	if card.worktreePath != "" {
+		ctx, cancel := context.WithCancel(context.Background())
+		card.chatCancel = cancel
+		return sendChatCmd(ctx, card.worktreePath, card.PR, card.Assessment, card.chatMessages, card.chatContext, m.program)
+	}
+	// Worktree still being created — sendChatCmd will be dispatched when chatWorktreeReadyMsg arrives
+	return nil
+}
+
+func (m *Model) cleanupWorktrees() tea.Cmd {
+	var cmds []tea.Cmd
+	for _, card := range m.cards {
+		if card.worktreePath != "" {
+			cmds = append(cmds, removeWorktreeCmd(m.app.RepoDir, card.worktreePath))
+		}
+	}
+	cmds = append(cmds, tea.Quit)
+	return tea.Batch(cmds...)
 }
 
 func (m Model) View() string {
@@ -436,9 +718,9 @@ func (m Model) View() string {
 	assessmentPanel := lipgloss.JoinVertical(lipgloss.Left, assessmentTitle, assessmentContent)
 
 	if m.modal.active {
-		title := "  Add comment  (Ctrl+S submit · Esc cancel)"
+		title := "  Add comment  (Enter submit · Alt+Enter newline · Esc cancel)"
 		if m.modal.isInline {
-			title = fmt.Sprintf("  Comment on %s:%d  (Ctrl+S submit · Esc cancel)", m.modal.filePath, m.modal.fileLine)
+			title = fmt.Sprintf("  Comment on %s:%d  (Enter submit · Alt+Enter newline · Esc cancel)", m.modal.filePath, m.modal.fileLine)
 		}
 		modalContent := lipgloss.JoinVertical(lipgloss.Left,
 			panelTitleFocused.Render(title),
@@ -451,11 +733,90 @@ func (m Model) View() string {
 		)
 	}
 
+	if m.chatActive {
+		// Render tab bar: [Diff] [Chat — file:line]
+		showChat := m.focus == focusChat || m.focus == focusAssessment
+		tabBar := m.renderTabBar(width, !showChat, showChat)
+
+		var content string
+		if showChat {
+			content = m.chatView.ViewContent()
+		} else {
+			content = m.diffView.ViewContent()
+		}
+		return lipgloss.JoinVertical(lipgloss.Left,
+			assessmentPanel,
+			tabBar,
+			content,
+			m.renderFooter(),
+		)
+	}
+
 	return lipgloss.JoinVertical(lipgloss.Left,
 		assessmentPanel,
 		m.diffView.View(),
 		m.renderFooter(),
 	)
+}
+
+var (
+	tabActive = lipgloss.NewStyle().
+			Bold(true).
+			Background(lipgloss.Color("62")).
+			Foreground(lipgloss.Color("230")).
+			Padding(0, 1)
+	tabInactive = lipgloss.NewStyle().
+			Background(lipgloss.Color("237")).
+			Foreground(lipgloss.Color("243")).
+			Padding(0, 1)
+	tabHint = lipgloss.NewStyle().
+		Background(lipgloss.Color("237")).
+		Foreground(lipgloss.Color("243")).
+		Faint(true)
+)
+
+func (m Model) renderTabBar(width int, diffActive, chatActive bool) string {
+	var diffTab, chatTab string
+	if diffActive {
+		diffTab = tabActive.Render("Diff")
+	} else {
+		diffTab = tabInactive.Render("Diff")
+	}
+
+	chatName := m.chatView.ChatTabName()
+	if chatActive {
+		chatTab = tabActive.Render(chatName)
+	} else {
+		chatTab = tabInactive.Render(chatName)
+	}
+
+	tabs := diffTab + " " + chatTab
+	tabsW := lipgloss.Width(tabs)
+
+	// Append hint text for active panel
+	var hint string
+	if diffActive && m.focus == focusDiff {
+		hint = "← collapse  → expand  ] next file  [ prev  c comment  ? chat"
+	} else if chatActive && m.focus == focusChat {
+		hint = "enter send  alt+enter newline  esc stop/close"
+	}
+
+	remaining := width - tabsW
+	if remaining > 2 && hint != "" {
+		// Right-align hint, pad with background
+		hintRendered := tabHint.Render(hint)
+		hintW := lipgloss.Width(hintRendered)
+		gap := remaining - hintW
+		if gap > 0 {
+			tabs += tabHint.Render(strings.Repeat(" ", gap)) + hintRendered
+		} else {
+			tabs += hintRendered
+		}
+	} else if remaining > 0 {
+		tabs += tabHint.Render(strings.Repeat(" ", remaining))
+	}
+
+	return tabs
 }
 
 func (m Model) renderFooter() string {
@@ -469,7 +830,14 @@ func (m Model) renderFooter() string {
 	} else if pending := m.fetching + m.scoring; pending > 0 {
 		status += fmt.Sprintf("  %s %d loading", m.spinner.View(), pending)
 	}
-	hints := "q quit  |  tab  |  j/k scroll  |  p/n nav  |  ctrl+n/p nav anywhere"
+	var hints string
+	if m.chatActive && m.focus == focusChat {
+		hints = "esc stop/close  |  tab  |  ctrl+n/p nav  |  ctrl+c quit"
+	} else if m.chatActive {
+		hints = "? chat  |  tab  |  j/k scroll  |  ctrl+n/p nav  |  q quit"
+	} else {
+		hints = "? chat  |  q quit  |  tab  |  j/k scroll  |  p/n nav  |  ctrl+n/p nav anywhere"
+	}
 	gap := width - lipgloss.Width(status) - lipgloss.Width(hints) - 2
 	if gap < 1 {
 		gap = 1
