@@ -131,25 +131,27 @@ func (c *View) RebuildViewport() {
 		wrapped := lipgloss.NewStyle().Width(w).Render(c.StreamContent)
 		lines = append(lines, strings.Split(wrapped, "\n")...)
 		if c.ToolCallCount > 0 && c.LastToolCall != "" {
-			lines = append(lines, chatDimStyle.Render(fmt.Sprintf("  %s (%d tool calls, last: %s)", c.SpinnerView, c.ToolCallCount, c.LastToolCall)))
+			s := chatDimStyle.Width(w).Render(fmt.Sprintf("  %s (%d tool calls, last: %s)", c.SpinnerView, c.ToolCallCount, c.LastToolCall))
+			lines = append(lines, strings.Split(s, "\n")...)
 		} else {
 			lines = append(lines, chatDimStyle.Render("\u258a"))
 		}
 	} else if c.Streaming {
 		lines = append(lines, "")
 		if c.ToolCallCount > 0 && c.LastToolCall != "" {
-			lines = append(lines, chatDimStyle.Render(fmt.Sprintf("%s Thinking... (%d tool calls, last: %s)", c.SpinnerView, c.ToolCallCount, c.LastToolCall)))
+			s := chatDimStyle.Width(w).Render(fmt.Sprintf("%s Thinking... (%d tool calls, last: %s)", c.SpinnerView, c.ToolCallCount, c.LastToolCall))
+			lines = append(lines, strings.Split(s, "\n")...)
 		} else {
 			lines = append(lines, chatDimStyle.Render(c.SpinnerView+" Thinking..."))
 		}
 	} else if c.Status != "" {
 		lines = append(lines, "")
-		lines = append(lines, chatDimStyle.Render(c.SpinnerView+" "+c.Status))
+		s := chatDimStyle.Width(w).Render(c.SpinnerView + " " + c.Status)
+		lines = append(lines, strings.Split(s, "\n")...)
 	} else if len(c.messages) == 0 && c.WelcomeText != "" {
 		lines = append(lines, "")
-		for _, wl := range strings.Split(c.WelcomeText, "\n") {
-			lines = append(lines, chatDimStyle.Render("  "+wl))
-		}
+		wrapped := chatDimStyle.Width(w).Render(c.WelcomeText)
+		lines = append(lines, strings.Split(wrapped, "\n")...)
 	}
 
 	c.viewport.SetContent(strings.Join(lines, "\n"))
