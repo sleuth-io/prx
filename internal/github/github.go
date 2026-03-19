@@ -37,11 +37,55 @@ type PR struct {
 	Body               string
 	HeadSHA            string
 	HeadRefName        string
+	State              string // "OPEN", "MERGED", or "CLOSED"
+	MergeStateStatus   string // "CLEAN", "BLOCKED", "DIRTY", "BEHIND", "UNSTABLE", "UNKNOWN", etc.
 	Checks             []CheckStatus
 	Reviews            []ReviewComment // PR-level review submissions (APPROVED, CHANGES_REQUESTED, etc.)
 	InlineComments     []ReviewComment // line-level code comments
 	Comments           []ReviewComment // top-level conversation comments
 	RequestedReviewers []string
+}
+
+// HasPendingChecks returns true if any check is still running (no conclusion yet).
+func (pr *PR) HasPendingChecks() bool {
+	for _, c := range pr.Checks {
+		if c.Conclusion == "" {
+			return true
+		}
+	}
+	return false
+}
+
+// MergeBlockReason returns a non-empty string describing why the PR cannot be merged,
+// or empty string if it is safe to proceed with merge.
+// BEHIND is allowed (GitHub can auto-merge); DIRTY/BLOCKED/UNSTABLE are hard blocks.
+func (pr *PR) MergeBlockReason() string {
+	if pr.HasFailingChecks() {
+		return "checks are failing"
+	}
+	if pr.HasPendingChecks() {
+		return "checks are still running"
+	}
+	switch pr.MergeStateStatus {
+	case "", "CLEAN", "UNKNOWN", "BEHIND", "HAS_HOOKS":
+		return ""
+	case "DIRTY":
+		return "PR has merge conflicts"
+	case "BLOCKED":
+		return "PR is blocked by branch protection"
+	case "UNSTABLE":
+		return "status checks are failing"
+	default:
+		return fmt.Sprintf("PR cannot be merged (%s)", pr.MergeStateStatus)
+	}
+}
+
+// MergeWarnReason returns a warning message for states that are allowed but not ideal.
+func (pr *PR) MergeWarnReason() string {
+	if pr.MergeStateStatus == "BEHIND" {
+		return "branch is behind base"
+	}
+	return ""
 }
 
 func (pr *PR) HasFailingChecks() bool {
@@ -90,9 +134,16 @@ func CurrentUser() (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-func MergePR(repo string, number int) error {
+func MergePR(repo string, number int, method string) error {
+	flag := "--merge"
+	switch method {
+	case "squash":
+		flag = "--squash"
+	case "rebase":
+		flag = "--rebase"
+	}
 	out, err := exec.Command("gh", "pr", "merge", fmt.Sprintf("%d", number),
-		"--repo", repo, "--squash", "--delete-branch").CombinedOutput()
+		"--repo", repo, flag, "--delete-branch").CombinedOutput()
 	if err != nil {
 		msg := strings.TrimSpace(string(out))
 		if msg != "" {
@@ -143,7 +194,7 @@ func ListOpenPRsMeta(repo string) ([]map[string]any, error) {
 	out, err := exec.Command("gh", "pr", "list",
 		"--repo", repo,
 		"--state", "open",
-		"--json", "number,title,author,url,createdAt,additions,deletions,files,body,reviewRequests,headRefOid,headRefName",
+		"--json", "number,title,author,url,createdAt,additions,deletions,files,body,reviewRequests,headRefOid,headRefName,mergeStateStatus",
 		"--limit", "50",
 	).Output()
 	if err != nil {
@@ -236,6 +287,11 @@ func FetchPRDetails(repo string, raw map[string]any) (*PR, error) {
 		}
 	}
 
+	mergeStateStatus := ""
+	if m, ok := raw["mergeStateStatus"].(string); ok {
+		mergeStateStatus = m
+	}
+
 	return &PR{
 		Number:             num,
 		Title:              fmt.Sprintf("%v", raw["title"]),
@@ -249,6 +305,7 @@ func FetchPRDetails(repo string, raw map[string]any) (*PR, error) {
 		Body:               body,
 		HeadSHA:            fmt.Sprintf("%v", raw["headRefOid"]),
 		HeadRefName:        fmt.Sprintf("%v", raw["headRefName"]),
+		MergeStateStatus:   mergeStateStatus,
 		Checks:             checks,
 		Reviews:            reviews,
 		InlineComments:     inlineComments,
@@ -262,10 +319,12 @@ func FetchPRDetails(repo string, raw map[string]any) (*PR, error) {
 // Used for lightweight refreshes after actions like comment/approve/merge.
 type PRActivity struct {
 	// Metadata that may change between refreshes
-	Title       string
-	Body        string
-	HeadSHA     string
-	HeadRefName string
+	Title            string
+	Body             string
+	HeadSHA          string
+	HeadRefName      string
+	State            string // "OPEN", "MERGED", or "CLOSED"
+	MergeStateStatus string
 	// Live activity
 	Checks         []CheckStatus
 	Reviews        []ReviewComment
@@ -289,25 +348,28 @@ func FetchPRActivity(repo string, number int) (*PRActivity, error) {
 		comments       []ReviewComment
 	)
 	wg.Add(5)
+	var state, mergeStateStatus string
 	go func() {
 		defer wg.Done()
 		out, err := exec.Command("gh", "pr", "view", fmt.Sprintf("%d", number),
-			"--repo", repo, "--json", "title,body,headRefOid,headRefName").Output()
+			"--repo", repo, "--json", "title,body,headRefOid,headRefName,state,mergeStateStatus").Output()
 		if err != nil {
 			logger.Error("PR #%d: pr view meta: %v", number, err)
 			return
 		}
 		var meta struct {
-			Title       string `json:"title"`
-			Body        string `json:"body"`
-			HeadRefOid  string `json:"headRefOid"`
-			HeadRefName string `json:"headRefName"`
+			Title            string `json:"title"`
+			Body             string `json:"body"`
+			HeadRefOid       string `json:"headRefOid"`
+			HeadRefName      string `json:"headRefName"`
+			State            string `json:"state"`
+			MergeStateStatus string `json:"mergeStateStatus"`
 		}
 		if err := json.Unmarshal(out, &meta); err != nil {
 			logger.Error("PR #%d: parse pr view meta: %v", number, err)
 			return
 		}
-		title, body, headSHA, headRefName = meta.Title, meta.Body, meta.HeadRefOid, meta.HeadRefName
+		title, body, headSHA, headRefName, state, mergeStateStatus = meta.Title, meta.Body, meta.HeadRefOid, meta.HeadRefName, meta.State, meta.MergeStateStatus
 	}()
 	go func() {
 		defer wg.Done()
@@ -343,14 +405,16 @@ func FetchPRActivity(repo string, number int) (*PRActivity, error) {
 	}()
 	wg.Wait()
 	return &PRActivity{
-		Title:          title,
-		Body:           body,
-		HeadSHA:        headSHA,
-		HeadRefName:    headRefName,
-		Checks:         checks,
-		Reviews:        reviews,
-		InlineComments: inlineComments,
-		Comments:       comments,
+		Title:            title,
+		Body:             body,
+		HeadSHA:          headSHA,
+		HeadRefName:      headRefName,
+		State:            state,
+		MergeStateStatus: mergeStateStatus,
+		Checks:           checks,
+		Reviews:          reviews,
+		InlineComments:   inlineComments,
+		Comments:         comments,
 	}, nil
 }
 

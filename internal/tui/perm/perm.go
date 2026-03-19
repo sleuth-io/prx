@@ -33,6 +33,10 @@ type RefreshMsg struct {
 	PRNumber int
 }
 
+// ConfigReloadMsg is sent to the TUI when config has been updated on disk
+// and the in-memory state should be refreshed.
+type ConfigReloadMsg struct{}
+
 // Listen starts the Unix socket listener and returns a cleanup function.
 // It sends a perm.Msg or perm.RefreshMsg to program for each incoming connection.
 func Listen(program *tea.Program) (socketPath string, cleanup func(), err error) {
@@ -87,6 +91,8 @@ func handleConn(conn net.Conn, program *tea.Program) {
 		}
 	case "refresh":
 		program.Send(RefreshMsg{PRNumber: req.PRNumber})
+	case "config_reload":
+		program.Send(ConfigReloadMsg{})
 	default:
 		logger.Error("perm: unknown request type: %q", req.Type)
 	}

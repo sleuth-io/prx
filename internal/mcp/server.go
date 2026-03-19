@@ -8,7 +8,9 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 
+	"github.com/sleuth-io/prx/internal/config"
 	"github.com/sleuth-io/prx/internal/github"
 	"github.com/sleuth-io/prx/internal/logger"
 )
@@ -66,11 +68,16 @@ type toolMeta struct {
 }
 
 var toolMetas = map[string]toolMeta{
-	"approve_pr":      {requiresPermission: true, isMutation: true},
-	"request_changes": {requiresPermission: true, isMutation: true},
-	"comment_on_pr":   {requiresPermission: true, isMutation: true},
-	"merge_pr":        {requiresPermission: true, isMutation: true},
-	// future read-only tools: requiresPermission: false, isMutation: false
+	"approve_pr":       {requiresPermission: true, isMutation: true},
+	"request_changes":  {requiresPermission: true, isMutation: true},
+	"comment_on_pr":    {requiresPermission: true, isMutation: true},
+	"merge_pr":         {requiresPermission: true, isMutation: true},
+	"get_config":       {requiresPermission: false, isMutation: false},
+	"set_model":        {requiresPermission: true, isMutation: false},
+	"set_merge_method": {requiresPermission: true, isMutation: false},
+	"set_criterion":    {requiresPermission: true, isMutation: false},
+	"remove_criterion": {requiresPermission: true, isMutation: false},
+	"set_thresholds":   {requiresPermission: true, isMutation: false},
 }
 
 var toolDefs = []map[string]interface{}{
@@ -118,6 +125,110 @@ var toolDefs = []map[string]interface{}{
 			"properties": map[string]interface{}{},
 		},
 	},
+	{
+		"name":        "get_config",
+		"description": "Get the current prx configuration: model, scoring criteria, and thresholds",
+		"inputSchema": map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{},
+		},
+	},
+	{
+		"name":        "set_model",
+		"description": "Change the Claude model used for PR scoring",
+		"inputSchema": map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"model": map[string]interface{}{
+					"type":        "string",
+					"description": "Model name (e.g. 'sonnet', 'opus', 'haiku')",
+				},
+			},
+			"required": []string{"model"},
+		},
+	},
+	{
+		"name":        "set_merge_method",
+		"description": "Change the merge method used when merging PRs",
+		"inputSchema": map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"method": map[string]interface{}{
+					"type":        "string",
+					"description": "Merge method: 'merge' (merge commit), 'squash' (squash and merge), or 'rebase' (rebase and merge)",
+				},
+			},
+			"required": []string{"method"},
+		},
+	},
+	{
+		"name":        "set_criterion",
+		"description": "Add or update a scoring criterion",
+		"inputSchema": map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"name": map[string]interface{}{
+					"type":        "string",
+					"description": "Unique identifier for the criterion (e.g. 'blast_radius')",
+				},
+				"label": map[string]interface{}{
+					"type":        "string",
+					"description": "Short display label (e.g. 'Blast')",
+				},
+				"description": map[string]interface{}{
+					"type":        "string",
+					"description": "Detailed description used in the AI prompt",
+				},
+				"weight": map[string]interface{}{
+					"type":        "number",
+					"description": "Weighting factor (must be > 0)",
+				},
+			},
+			"required": []string{"name", "label", "description", "weight"},
+		},
+	},
+	{
+		"name":        "remove_criterion",
+		"description": "Remove a scoring criterion by name",
+		"inputSchema": map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"name": map[string]interface{}{
+					"type":        "string",
+					"description": "Name of the criterion to remove",
+				},
+			},
+			"required": []string{"name"},
+		},
+	},
+	{
+		"name":        "set_thresholds",
+		"description": "Update the approve_below and review_above score thresholds",
+		"inputSchema": map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"approve_below": map[string]interface{}{
+					"type":        "number",
+					"description": "PRs scoring below this are auto-approved (1.0–5.0)",
+				},
+				"review_above": map[string]interface{}{
+					"type":        "number",
+					"description": "PRs scoring above this require careful review (1.0–5.0)",
+				},
+			},
+			"required": []string{"approve_below", "review_above"},
+		},
+	},
+}
+
+// ToolNames returns the MCP-prefixed names of all registered tools.
+// Commands can use this to build --allowedTools lists without hardcoding names.
+func ToolNames() []string {
+	names := make([]string, 0, len(toolMetas))
+	for name := range toolMetas {
+		names = append(names, "mcp__prx__"+name)
+	}
+	return names
 }
 
 // Run reads JSON-RPC requests from stdin and writes responses to stdout.
@@ -242,6 +353,25 @@ func (s *Server) toolDescription(name string, args map[string]interface{}) strin
 		return fmt.Sprintf("Post comment on PR #%d: %s", s.prNumber, truncate(body, 100))
 	case "merge_pr":
 		return fmt.Sprintf("Merge PR #%d", s.prNumber)
+	case "set_model":
+		model, _ := args["model"].(string)
+		return fmt.Sprintf("Change scoring model to %q", model)
+	case "set_merge_method":
+		method, _ := args["method"].(string)
+		return fmt.Sprintf("Change merge method to %q", method)
+	case "set_criterion":
+		n, _ := args["name"].(string)
+		label, _ := args["label"].(string)
+		desc, _ := args["description"].(string)
+		weight, _ := args["weight"].(float64)
+		return fmt.Sprintf("Add/update criterion %q: label=%q, weight=%.1f, description=%q", n, label, weight, desc)
+	case "remove_criterion":
+		n, _ := args["name"].(string)
+		return fmt.Sprintf("Remove scoring criterion %q", n)
+	case "set_thresholds":
+		ab, _ := args["approve_below"].(float64)
+		ra, _ := args["review_above"].(float64)
+		return fmt.Sprintf("Set thresholds: approve_below=%.1f, review_above=%.1f", ab, ra)
 	default:
 		return name
 	}
@@ -267,13 +397,130 @@ func (s *Server) executeAction(name string, args map[string]interface{}) (string
 		}
 		return "Comment posted successfully", nil
 	case "merge_pr":
-		if err := github.MergePR(s.repo, s.prNumber); err != nil {
+		cfg, err := config.Load()
+		if err != nil {
+			return "", fmt.Errorf("loading config: %w", err)
+		}
+		if err := github.MergePR(s.repo, s.prNumber, cfg.Review.MergeMethod); err != nil {
 			return "", err
 		}
 		return "PR merged successfully", nil
+	case "get_config", "set_model", "set_merge_method", "set_criterion", "remove_criterion", "set_thresholds":
+		return s.executeConfigAction(name, args)
 	default:
 		return "", fmt.Errorf("unknown tool: %s", name)
 	}
+}
+
+func (s *Server) executeConfigAction(name string, args map[string]interface{}) (string, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return "", fmt.Errorf("loading config: %w", err)
+	}
+
+	if name == "get_config" {
+		var sb strings.Builder
+		fmt.Fprintf(&sb, "Model: %s\nMerge method: %s\n\nCriteria:\n", cfg.Review.Model, cfg.Review.MergeMethod)
+		for _, c := range cfg.Criteria {
+			fmt.Fprintf(&sb, "  - %s (%s): weight=%.1f\n    %s\n", c.Name, c.Label, c.Weight, c.Description)
+		}
+		fmt.Fprintf(&sb, "\nThresholds:\n  approve_below: %.1f\n  review_above:  %.1f\n", cfg.Thresholds.ApproveBelow, cfg.Thresholds.ReviewAbove)
+		return sb.String(), nil
+	}
+
+	switch name {
+	case "set_model":
+		model, _ := args["model"].(string)
+		if model == "" {
+			return "", fmt.Errorf("model must be a non-empty string")
+		}
+		cfg.Review.Model = model
+
+	case "set_merge_method":
+		method, _ := args["method"].(string)
+		switch method {
+		case "merge", "squash", "rebase":
+		default:
+			return "", fmt.Errorf("merge method must be 'merge', 'squash', or 'rebase'")
+		}
+		cfg.Review.MergeMethod = method
+
+	case "set_criterion":
+		n, _ := args["name"].(string)
+		label, _ := args["label"].(string)
+		desc, _ := args["description"].(string)
+		weight, _ := args["weight"].(float64)
+		if n == "" {
+			return "", fmt.Errorf("name must be non-empty")
+		}
+		if weight <= 0 {
+			return "", fmt.Errorf("weight must be > 0")
+		}
+		updated := false
+		for i, c := range cfg.Criteria {
+			if c.Name == n {
+				cfg.Criteria[i] = config.Criterion{Name: n, Label: label, Description: desc, Weight: weight}
+				updated = true
+				break
+			}
+		}
+		if !updated {
+			cfg.Criteria = append(cfg.Criteria, config.Criterion{Name: n, Label: label, Description: desc, Weight: weight})
+		}
+
+	case "remove_criterion":
+		n, _ := args["name"].(string)
+		if n == "" {
+			return "", fmt.Errorf("name must be non-empty")
+		}
+		var newCriteria []config.Criterion
+		for _, c := range cfg.Criteria {
+			if c.Name != n {
+				newCriteria = append(newCriteria, c)
+			}
+		}
+		if len(newCriteria) == 0 {
+			return "", fmt.Errorf("cannot remove the last criterion")
+		}
+		cfg.Criteria = newCriteria
+
+	case "set_thresholds":
+		ab, _ := args["approve_below"].(float64)
+		ra, _ := args["review_above"].(float64)
+		if ab < 1.0 || ab > 5.0 {
+			return "", fmt.Errorf("approve_below must be between 1.0 and 5.0")
+		}
+		if ra < 1.0 || ra > 5.0 {
+			return "", fmt.Errorf("review_above must be between 1.0 and 5.0")
+		}
+		if ab >= ra {
+			return "", fmt.Errorf("approve_below (%.1f) must be less than review_above (%.1f)", ab, ra)
+		}
+		cfg.Thresholds.ApproveBelow = ab
+		cfg.Thresholds.ReviewAbove = ra
+	}
+
+	if err := config.Save(cfg); err != nil {
+		return "", fmt.Errorf("saving config: %w", err)
+	}
+	s.notifyConfigReload()
+	return fmt.Sprintf("%s completed successfully", name), nil
+}
+
+// notifyConfigReload signals the TUI to reload config from disk.
+func (s *Server) notifyConfigReload() {
+	if s.socketPath == "" {
+		return
+	}
+	conn, err := net.Dial("unix", s.socketPath)
+	if err != nil {
+		logger.Error("mcp: notify config reload: %v", err)
+		return
+	}
+	defer func() { _ = conn.Close() }()
+	_ = json.NewEncoder(conn).Encode(map[string]interface{}{
+		"type": "config_reload",
+	})
 }
 
 // notifyRefresh signals the TUI to re-fetch this PR's data.

@@ -121,6 +121,12 @@ type permRequestMsg struct {
 	respond     func(allowed bool)
 }
 
+type confirmDialog struct {
+	description  string
+	actionStatus string // set on m.actionStatus when confirmed
+	cmd          tea.Cmd
+}
+
 type prRefreshedMsg struct {
 	prNumber int
 	activity *github.PRActivity

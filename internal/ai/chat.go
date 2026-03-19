@@ -118,6 +118,16 @@ func BuildChatPrompt(pr *github.PR, assessment *Assessment, history []ChatMessag
 		}
 	}
 
+	// Configuration tools (always available)
+	sb.WriteString("\n## Configuration Tools\n")
+	sb.WriteString("You can inspect and modify how PRs are reviewed:\n")
+	sb.WriteString("- get_config: show current model, criteria, and thresholds\n")
+	sb.WriteString("- set_model: change the Claude model used for scoring\n")
+	sb.WriteString("- set_criterion: add or update a scoring criterion (name, label, description, weight)\n")
+	sb.WriteString("- remove_criterion: remove a criterion by name\n")
+	sb.WriteString("- set_thresholds: update approve_below and review_above thresholds\n")
+	sb.WriteString("Only modify config when explicitly asked. Write actions require user confirmation.\n")
+
 	// Available PR actions
 	if len(availableActions) > 0 {
 		sb.WriteString("\n## Available PR Actions\n")

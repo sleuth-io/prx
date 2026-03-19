@@ -17,6 +17,7 @@ import (
 	"github.com/sleuth-io/prx/internal/cache"
 	"github.com/sleuth-io/prx/internal/github"
 	"github.com/sleuth-io/prx/internal/logger"
+	"github.com/sleuth-io/prx/internal/mcp"
 	"github.com/sleuth-io/prx/internal/tui/chat"
 	"github.com/sleuth-io/prx/internal/tui/diff"
 )
@@ -88,9 +89,9 @@ func scorePRCmd(pr *github.PR, a *app.App) tea.Cmd {
 	}
 }
 
-func mergeCmd(repo string, number int) tea.Cmd {
+func mergeCmd(repo string, number int, method string) tea.Cmd {
 	return func() tea.Msg {
-		err := github.MergePR(repo, number)
+		err := github.MergePR(repo, number, method)
 		return actionDoneMsg{pr: number, action: "merge", err: err}
 	}
 }
@@ -222,10 +223,11 @@ func sendChatCmd(ctx context.Context, worktreePath string, pr *github.PR, assess
 		}
 
 		prompt := ai.BuildChatPrompt(pr, assessment, history, diffCtx, availableActions)
-		allowedTools := "Read,Glob,Grep"
+		allTools := append([]string{"Read", "Glob", "Grep"}, mcp.ToolNames()...)
 		if len(availableActions) > 0 {
-			allowedTools += "," + strings.Join(availableActions, ",")
+			allTools = append(allTools, availableActions...)
 		}
+		allowedTools := strings.Join(allTools, ",")
 		args := []string{
 			"-p", prompt,
 			"--output-format", "stream-json",
@@ -353,6 +355,42 @@ func sendChatCmd(ctx context.Context, worktreePath string, pr *github.PR, assess
 
 // toolSummary returns a short display string like "Read foo.py" or "Grep pattern".
 func toolSummary(name string, input map[string]interface{}) string {
+	// Translate mcp__prx__* tool names to friendly labels.
+	if strings.HasPrefix(name, "mcp__prx__") {
+		short := strings.TrimPrefix(name, "mcp__prx__")
+		switch short {
+		case "get_config":
+			return "Reading config"
+		case "set_model":
+			if m, ok := input["model"].(string); ok {
+				return "Setting model → " + m
+			}
+			return "Setting model"
+		case "set_criterion":
+			if n, ok := input["name"].(string); ok {
+				return "Updating criterion: " + n
+			}
+			return "Updating criterion"
+		case "remove_criterion":
+			if n, ok := input["name"].(string); ok {
+				return "Removing criterion: " + n
+			}
+			return "Removing criterion"
+		case "set_thresholds":
+			return "Updating thresholds"
+		case "approve_pr":
+			return "Approving PR"
+		case "request_changes":
+			return "Requesting changes"
+		case "comment_on_pr":
+			return "Posting comment"
+		case "merge_pr":
+			return "Merging PR"
+		default:
+			return strings.ReplaceAll(short, "_", " ")
+		}
+	}
+
 	if len(input) == 0 {
 		return name
 	}

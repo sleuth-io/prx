@@ -18,7 +18,15 @@ var (
 	verdictReview  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("220"))
 	verdictReject  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("196"))
 
-	boldStyle = lipgloss.NewStyle().Bold(true)
+	boldStyle    = lipgloss.NewStyle().Bold(true)
+	mergedBanner = lipgloss.NewStyle().Bold(true).
+			Foreground(lipgloss.Color("230")).
+			Background(lipgloss.Color("57")). // purple, like GitHub's merged colour
+			Padding(0, 1)
+	closedBanner = lipgloss.NewStyle().Bold(true).
+			Foreground(lipgloss.Color("230")).
+			Background(lipgloss.Color("238")).
+			Padding(0, 1)
 )
 
 // RenderData contains everything needed to render the assessment panel.
@@ -191,10 +199,17 @@ func buildContent(data RenderData, vpWidth int) string {
 
 	leftCol := lipgloss.NewStyle().Width(leftW).Render(strings.Join(leftLines, "\n"))
 	rightCol := lipgloss.NewStyle().Width(rightW).Render(strings.Join(rightLines, "\n"))
-	cols := lipgloss.JoinVertical(lipgloss.Left,
-		title,
-		lipgloss.JoinHorizontal(lipgloss.Top, leftCol, rightCol),
-	)
+
+	twoCol := lipgloss.JoinHorizontal(lipgloss.Top, leftCol, rightCol)
+	var cols string
+	switch pr.State {
+	case "MERGED":
+		cols = lipgloss.JoinVertical(lipgloss.Left, mergedBanner.Render("  MERGED  "), title, twoCol)
+	case "CLOSED":
+		cols = lipgloss.JoinVertical(lipgloss.Left, closedBanner.Render("  CLOSED  "), title, twoCol)
+	default:
+		cols = lipgloss.JoinVertical(lipgloss.Left, title, twoCol)
+	}
 
 	// PR description (collapsible, full-width below columns)
 	if bodyLine != "" {
@@ -334,7 +349,7 @@ func renderVerdict(verdict string) string {
 	case "review":
 		return verdictReview.Render("REVIEW")
 	case "reject":
-		return verdictReject.Render("REJECT")
+		return verdictReject.Render("HIGH RISK")
 	default:
 		return verdict
 	}

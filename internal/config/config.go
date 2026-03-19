@@ -26,7 +26,8 @@ type Config struct {
 }
 
 type ReviewConfig struct {
-	Model string `toml:"model"` // Claude model to use (e.g. "sonnet", "opus")
+	Model       string `toml:"model"`        // Claude model to use (e.g. "sonnet", "opus")
+	MergeMethod string `toml:"merge_method"` // "merge", "squash", or "rebase"
 }
 
 type ThresholdsConfig struct {
@@ -73,7 +74,7 @@ func DefaultCriteria() []Criterion {
 
 func defaults() Config {
 	return Config{
-		Review:   ReviewConfig{Model: "sonnet"},
+		Review:   ReviewConfig{Model: "sonnet", MergeMethod: "merge"},
 		Criteria: DefaultCriteria(),
 		Thresholds: ThresholdsConfig{
 			ApproveBelow: 2.0,
@@ -110,6 +111,23 @@ func CriteriaHash(criteria []Criterion) string {
 	}
 	h := sha256.Sum256([]byte(sb.String()))
 	return fmt.Sprintf("%x", h[:4])
+}
+
+// Save writes cfg to the default config path, creating parent directories as needed.
+func Save(cfg Config) error {
+	path := defaultPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("creating config dir: %w", err)
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("opening config for write: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	if err := toml.NewEncoder(f).Encode(cfg); err != nil {
+		return fmt.Errorf("encoding config: %w", err)
+	}
+	return nil
 }
 
 func defaultPath() string {

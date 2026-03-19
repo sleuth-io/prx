@@ -12,6 +12,7 @@ import (
 
 	"github.com/sleuth-io/prx/internal/ai"
 	"github.com/sleuth-io/prx/internal/app"
+	"github.com/sleuth-io/prx/internal/config"
 	"github.com/sleuth-io/prx/internal/github"
 	"github.com/sleuth-io/prx/internal/logger"
 	"github.com/sleuth-io/prx/internal/tui/chat"
@@ -44,6 +45,7 @@ type Model struct {
 	assessmentPanel scoring.Panel
 	spinner         spinner.Model
 	modal           commentModal
+	confirm         *confirmDialog
 	actionStatus    string // e.g. "Merging…", "Approving…"
 	bodyExpanded    bool
 	program         *tea.Program
@@ -98,6 +100,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case perm.ConfigReloadMsg:
+		var cmds []tea.Cmd
+		oldHash := config.CriteriaHash(m.app.Config.Criteria)
+		if cfg, err := config.Load(); err == nil {
+			m.app.Config = cfg
+		}
+		if config.CriteriaHash(m.app.Config.Criteria) != oldHash {
+			for _, card := range m.cards {
+				card.Scoring = true
+				m.scoring++
+				cmds = append(cmds, scorePRCmd(card.PR, m.app))
+			}
+			m.rebuildAssessment()
+		}
+		return m, tea.Batch(cmds...)
+
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -107,6 +125,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		if m.modal.active {
 			return m.handleModalKey(msg)
+		}
+
+		if m.confirm != nil {
+			switch msg.String() {
+			case "y":
+				cmd := m.confirm.cmd
+				m.actionStatus = m.confirm.actionStatus
+				m.confirm = nil
+				return m, cmd
+			case "n", "esc":
+				m.confirm = nil
+			}
+			return m, nil
 		}
 
 		if m.pendingPerm != nil {
@@ -255,18 +286,39 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.assessmentPanel.ScrollUp(1)
 			case "a":
 				if card := m.currentCard(); card != nil && !card.Scoring && !m.isOwnPR(card) {
-					m.actionStatus = "Approving\u2026"
-					return m, approveCmd(m.app.Repo, card.PR.Number)
+					repo, num := m.app.Repo, card.PR.Number
+					m.confirm = &confirmDialog{
+						description:  fmt.Sprintf("Approve PR #%d?", num),
+						actionStatus: "Approving\u2026",
+						cmd:          approveCmd(repo, num),
+					}
 				}
 			case "m":
 				if card := m.currentCard(); card != nil && !card.Scoring && m.isOwnPR(card) {
-					m.actionStatus = "Merging\u2026"
-					return m, mergeCmd(m.app.Repo, card.PR.Number)
+					if reason := card.PR.MergeBlockReason(); reason != "" {
+						m.actionStatus = fmt.Sprintf("Cannot merge: %s", reason)
+						return m, nil
+					}
+					repo, num := m.app.Repo, card.PR.Number
+					method := m.app.Config.Review.MergeMethod
+				desc := fmt.Sprintf("Merge PR #%d? (%s + delete branch)", num, method)
+					if warn := card.PR.MergeWarnReason(); warn != "" {
+						desc += fmt.Sprintf(" [warning: %s]", warn)
+					}
+					m.confirm = &confirmDialog{
+						description:  desc,
+						actionStatus: "Merging\u2026",
+						cmd:          mergeCmd(repo, num, method),
+					}
 				}
 			case "r":
 				if card := m.currentCard(); card != nil && !card.Scoring && card.Assessment != nil && !m.isOwnPR(card) {
-					m.actionStatus = "Requesting changes\u2026"
-					return m, requestChangesCmd(m.app.Repo, card.PR.Number, card.Assessment.ReviewNotes)
+					repo, num, notes := m.app.Repo, card.PR.Number, card.Assessment.ReviewNotes
+					m.confirm = &confirmDialog{
+						description:  fmt.Sprintf("Request changes on PR #%d?", num),
+						actionStatus: "Requesting changes\u2026",
+						cmd:          requestChangesCmd(repo, num, notes),
+					}
 				}
 			case "s":
 				m.navigatePR(1)
@@ -444,25 +496,45 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		var rescoreCmd tea.Cmd
 		shaChanged := msg.newDiff != ""
-		for _, card := range m.cards {
-			if card.PR.Number == msg.prNumber {
-				// Always apply metadata changes.
-				if msg.activity.Title != "" {
-					card.PR.Title = msg.activity.Title
+		isCurrent := m.currentCard() != nil && m.currentCard().PR.Number == msg.prNumber
+		for i, card := range m.cards {
+			if card.PR.Number != msg.prNumber {
+				continue
+			}
+			// Update state first so closed/merged detection is accurate.
+			if msg.activity.State != "" {
+				card.PR.State = msg.activity.State
+			}
+			if msg.activity.MergeStateStatus != "" {
+				card.PR.MergeStateStatus = msg.activity.MergeStateStatus
+			}
+			isDone := card.PR.State == "MERGED" || card.PR.State == "CLOSED"
+			if isDone && !isCurrent {
+				// Remove from list; adjust current index if needed.
+				m.cards = append(m.cards[:i], m.cards[i+1:]...)
+				if m.current > i {
+					m.current--
 				}
-				if msg.activity.Body != "" {
-					card.PR.Body = msg.activity.Body
-				}
-				if msg.activity.HeadSHA != "" {
-					card.PR.HeadSHA = msg.activity.HeadSHA
-					card.PR.HeadRefName = msg.activity.HeadRefName
-				}
-				oldReviewsText := reviewsText(card.PR)
-				card.PR.Checks = msg.activity.Checks
-				card.PR.Reviews = msg.activity.Reviews
-				card.PR.InlineComments = msg.activity.InlineComments
-				card.PR.Comments = msg.activity.Comments
-				reviewsChanged := reviewsText(card.PR) != oldReviewsText
+				break
+			}
+			// Always apply metadata changes.
+			if msg.activity.Title != "" {
+				card.PR.Title = msg.activity.Title
+			}
+			if msg.activity.Body != "" {
+				card.PR.Body = msg.activity.Body
+			}
+			if msg.activity.HeadSHA != "" {
+				card.PR.HeadSHA = msg.activity.HeadSHA
+				card.PR.HeadRefName = msg.activity.HeadRefName
+			}
+			oldReviewsText := reviewsText(card.PR)
+			card.PR.Checks = msg.activity.Checks
+			card.PR.Reviews = msg.activity.Reviews
+			card.PR.InlineComments = msg.activity.InlineComments
+			card.PR.Comments = msg.activity.Comments
+			reviewsChanged := reviewsText(card.PR) != oldReviewsText
+			if !isDone {
 				if shaChanged {
 					// New commits: replace diff, re-parse, force re-score.
 					card.PR.Diff = msg.newDiff
@@ -484,8 +556,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						rescoreCmd = scorePRCmd(card.PR, m.app)
 					}
 				}
-				break
 			}
+			break
 		}
 		if card := m.currentCard(); card != nil && card.PR.Number == msg.prNumber {
 			m.rebuildAssessment()
@@ -662,6 +734,7 @@ func (m *Model) navigatePR(delta int) {
 	}
 	m.current = next
 	m.bodyExpanded = false
+	m.actionStatus = ""
 	m.assessmentPanel.GotoTop()
 	m.loadCurrentDiff()
 	m.rebuildAssessment()
@@ -947,18 +1020,22 @@ func (m Model) View() string {
 			content = m.diffView.ViewContent()
 		}
 		parts := []string{assessmentPanel, tabBar, content}
-		if m.pendingPerm != nil {
+		if m.confirm != nil {
+			parts = append(parts, m.renderConfirmBanner(width))
+		} else if m.pendingPerm != nil {
 			parts = append(parts, m.renderPermBanner(width))
 		}
 		parts = append(parts, m.renderFooter())
 		return lipgloss.JoinVertical(lipgloss.Left, parts...)
 	}
 
-	return lipgloss.JoinVertical(lipgloss.Left,
-		assessmentPanel,
-		m.diffView.View(),
-		m.renderFooter(),
-	)
+	var parts []string
+	if m.confirm != nil {
+		parts = []string{assessmentPanel, m.diffView.View(), m.renderConfirmBanner(width), m.renderFooter()}
+	} else {
+		parts = []string{assessmentPanel, m.diffView.View(), m.renderFooter()}
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, parts...)
 }
 
 var (
@@ -1025,6 +1102,15 @@ var permBannerStyle = lipgloss.NewStyle().
 	BorderForeground(lipgloss.Color("214")).
 	Foreground(lipgloss.Color("230")).
 	Padding(0, 1)
+
+func (m Model) renderConfirmBanner(width int) string {
+	inner := fmt.Sprintf("%s\n[y] confirm   [n/esc] cancel", m.confirm.description)
+	maxW := width - 4
+	if maxW < 20 {
+		maxW = 20
+	}
+	return permBannerStyle.Width(maxW).Render(inner)
+}
 
 func (m Model) renderPermBanner(width int) string {
 	inner := fmt.Sprintf("Claude wants to: %s\n[y] allow   [n] deny", m.pendingPerm.description)
