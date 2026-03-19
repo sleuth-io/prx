@@ -93,15 +93,19 @@ The start_line is the new-file line number from the hunk header (the + number in
 	return sb.String()
 }
 
-func AssessPR(pr *github.PR, repoDir string, criteria []config.Criterion) (*Assessment, error) {
+func AssessPR(pr *github.PR, repoDir string, criteria []config.Criterion, model string) (*Assessment, error) {
 	logger.Info("assessing PR #%d: %s", pr.Number, pr.Title)
 	prompt := buildPrompt(pr, criteria)
 
-	cmd := exec.Command("claude",
+	args := []string{
 		"-p", prompt,
 		"--output-format", "json",
 		"--allowedTools", "Read,Bash,Glob",
-	)
+	}
+	if model != "" {
+		args = append(args, "--model", model)
+	}
+	cmd := exec.Command("claude", args...)
 	cmd.Dir = repoDir
 
 	out, err := cmd.Output()
@@ -214,13 +218,84 @@ func buildPrompt(pr *github.PR, criteria []config.Criterion) string {
 		}
 	}
 
-	diff := pr.Diff
-	if len(diff) > 30000 {
-		diff = diff[:30000] + "\n... [diff truncated]"
-	}
-	fmt.Fprintf(&sb, "\n## Diff\n```\n%s\n```\n", diff)
+	writeDiffSection(&sb, pr.Diff, 30000)
 
-	sb.WriteString("\nUse the tools to explore the codebase if needed. Then respond with the JSON assessment.")
+	sb.WriteString("\nUse the tools to explore the codebase if needed — especially for files not included in the diff above. Then respond with the JSON assessment.")
 
 	return sb.String()
+}
+
+// writeDiffSection writes the diff to the prompt, splitting large diffs into
+// a file summary + as many full file diffs as fit within the budget.
+func writeDiffSection(sb *strings.Builder, rawDiff string, budget int) {
+	if len(rawDiff) <= budget {
+		fmt.Fprintf(sb, "\n## Diff\n```\n%s\n```\n", rawDiff)
+		return
+	}
+
+	// Parse diff into per-file chunks
+	type fileDiff struct {
+		name    string
+		content string
+	}
+	var files []fileDiff
+	lines := strings.Split(rawDiff, "\n")
+	var current strings.Builder
+	var currentName string
+
+	for _, line := range lines {
+		if strings.HasPrefix(line, "diff --git ") {
+			if currentName != "" {
+				files = append(files, fileDiff{name: currentName, content: current.String()})
+			}
+			current.Reset()
+			// Extract filename from "diff --git a/path b/path"
+			parts := strings.SplitN(line, " b/", 2)
+			if len(parts) == 2 {
+				currentName = parts[1]
+			} else {
+				currentName = line
+			}
+		}
+		current.WriteString(line)
+		current.WriteByte('\n')
+	}
+	if currentName != "" {
+		files = append(files, fileDiff{name: currentName, content: current.String()})
+	}
+
+	// Build file summary with hunk line counts
+	sb.WriteString("\n## Files Changed (summary)\n")
+	for _, f := range files {
+		adds, dels := countLines(f.content)
+		fmt.Fprintf(sb, "- `%s` (+%d/-%d)\n", f.name, adds, dels)
+	}
+
+	// Include as many full file diffs as fit in the budget
+	sb.WriteString("\n## Diff (partial — use Read tool to inspect omitted files)\n```\n")
+	used := 0
+	included := 0
+	for _, f := range files {
+		if used+len(f.content) > budget {
+			continue
+		}
+		sb.WriteString(f.content)
+		used += len(f.content)
+		included++
+	}
+	sb.WriteString("```\n")
+	if included < len(files) {
+		fmt.Fprintf(sb, "\n*%d of %d files shown. Use the Read tool to examine the remaining files.*\n", included, len(files))
+	}
+}
+
+func countLines(diffChunk string) (adds, dels int) {
+	for _, line := range strings.Split(diffChunk, "\n") {
+		if strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++") {
+			adds++
+		} else if strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---") {
+			dels++
+		}
+	}
+	return
 }

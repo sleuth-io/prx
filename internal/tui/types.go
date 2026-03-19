@@ -104,6 +104,12 @@ type chatDoneMsg struct {
 	err          error
 }
 
+type chatToolCallMsg struct {
+	prNumber int
+	count    int
+	lastTool string
+}
+
 type chatWorktreeReadyMsg struct {
 	prNumber int
 	path     string

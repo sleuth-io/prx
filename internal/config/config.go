@@ -25,7 +25,9 @@ type Config struct {
 	Thresholds ThresholdsConfig `toml:"thresholds"`
 }
 
-type ReviewConfig struct{}
+type ReviewConfig struct {
+	Model string `toml:"model"` // Claude model to use (e.g. "sonnet", "opus")
+}
 
 type ThresholdsConfig struct {
 	ApproveBelow float64 `toml:"approve_below"`
@@ -71,7 +73,7 @@ func DefaultCriteria() []Criterion {
 
 func defaults() Config {
 	return Config{
-		Review:   ReviewConfig{},
+		Review:   ReviewConfig{Model: "sonnet"},
 		Criteria: DefaultCriteria(),
 		Thresholds: ThresholdsConfig{
 			ApproveBelow: 2.0,

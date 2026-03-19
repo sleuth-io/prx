@@ -49,7 +49,7 @@ func scorePRCmd(pr *github.PR, a *app.App) tea.Cmd {
 			return prScoredMsg{prNumber: pr.Number, assessment: &assessment, fromCache: true}
 		}
 
-		assessment, err := ai.AssessPR(pr, a.RepoDir, a.Config.Criteria)
+		assessment, err := ai.AssessPR(pr, a.RepoDir, a.Config.Criteria, a.Config.Review.Model)
 		if err != nil {
 			return prScoredMsg{prNumber: pr.Number, err: err}
 		}
@@ -145,7 +145,7 @@ func removeWorktreeCmd(repoDir, path string) tea.Cmd {
 	}
 }
 
-func sendChatCmd(ctx context.Context, worktreePath string, pr *github.PR, assessment *ai.Assessment, messages []chat.Message, diffCtx *ai.DiffContext, program *tea.Program) tea.Cmd {
+func sendChatCmd(ctx context.Context, worktreePath string, pr *github.PR, assessment *ai.Assessment, messages []chat.Message, diffCtx *ai.DiffContext, model string, program *tea.Program) tea.Cmd {
 	return func() tea.Msg {
 		history := make([]ai.ChatMessage, len(messages))
 		for i, m := range messages {
@@ -153,14 +153,18 @@ func sendChatCmd(ctx context.Context, worktreePath string, pr *github.PR, assess
 		}
 
 		prompt := ai.BuildChatPrompt(pr, assessment, history, diffCtx)
-		cmd := exec.CommandContext(ctx, "claude",
+		args := []string{
 			"-p", prompt,
 			"--output-format", "stream-json",
 			"--verbose",
 			"--allowedTools", "Read,Glob,Grep",
 			"--strict-mcp-config",
 			"--no-session-persistence",
-		)
+		}
+		if model != "" {
+			args = append(args, "--model", model)
+		}
+		cmd := exec.CommandContext(ctx, "claude", args...)
 		cmd.Dir = worktreePath
 
 		stdout, err := cmd.StdoutPipe()
@@ -174,6 +178,8 @@ func sendChatCmd(ctx context.Context, worktreePath string, pr *github.PR, assess
 		}
 		var fullResponse strings.Builder
 		prevLen := 0
+		toolCallCount := 0
+		lastToolCall := ""
 		scanner := bufio.NewScanner(stdout)
 		scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
 		sentInit := false
@@ -203,8 +209,10 @@ func sendChatCmd(ctx context.Context, worktreePath string, pr *github.PR, assess
 				var msg struct {
 					Message struct {
 						Content []struct {
-							Type string `json:"type"`
-							Text string `json:"text"`
+							Type  string                 `json:"type"`
+							Text  string                 `json:"text"`
+							Name  string                 `json:"name"`
+							Input map[string]interface{} `json:"input"`
 						} `json:"content"`
 					} `json:"message"`
 				}
@@ -215,6 +223,10 @@ func sendChatCmd(ctx context.Context, worktreePath string, pr *github.PR, assess
 				for _, block := range msg.Message.Content {
 					if block.Type == "text" {
 						text += block.Text
+					} else if block.Type == "tool_use" && block.Name != "" {
+						toolCallCount++
+						lastToolCall = toolSummary(block.Name, block.Input)
+						program.Send(chatToolCallMsg{prNumber: pr.Number, count: toolCallCount, lastTool: lastToolCall})
 					}
 				}
 				if text != "" {
@@ -261,5 +273,30 @@ func sendChatCmd(ctx context.Context, worktreePath string, pr *github.PR, assess
 
 		return chatDoneMsg{prNumber: pr.Number, fullResponse: fullResponse.String()}
 	}
+}
+
+// toolSummary returns a short display string like "Read foo.py" or "Grep pattern".
+func toolSummary(name string, input map[string]interface{}) string {
+	if len(input) == 0 {
+		return name
+	}
+	// Pick the most informative arg for common tools.
+	for _, key := range []string{"file_path", "pattern", "command", "query", "path"} {
+		if v, ok := input[key]; ok {
+			s := fmt.Sprintf("%v", v)
+			// Use basename for file paths.
+			if key == "file_path" {
+				if i := strings.LastIndex(s, "/"); i >= 0 {
+					s = s[i+1:]
+				}
+			}
+			// Truncate long values.
+			if len(s) > 40 {
+				s = s[:37] + "..."
+			}
+			return name + " " + s
+		}
+	}
+	return name
 }
 

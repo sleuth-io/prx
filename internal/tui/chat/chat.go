@@ -34,6 +34,8 @@ type View struct {
 	Streaming     bool
 	StreamContent string // content being streamed for current response
 	SpinnerView   string // rendered spinner frame (set by parent)
+	ToolCallCount int    // number of tool calls made so far
+	LastToolCall  string // name of most recent tool call
 	diffContext   *ai.DiffContext
 	width, height int
 	Focused       bool
@@ -100,6 +102,8 @@ func (c *View) FinishStream(fullResponse string) {
 	c.Streaming = false
 	c.StreamContent = ""
 	c.Status = ""
+	c.ToolCallCount = 0
+	c.LastToolCall = ""
 	c.RebuildViewport()
 }
 
@@ -126,10 +130,18 @@ func (c *View) RebuildViewport() {
 		lines = append(lines, chatAssistantStyle.Render("Claude:"))
 		wrapped := lipgloss.NewStyle().Width(w).Render(c.StreamContent)
 		lines = append(lines, strings.Split(wrapped, "\n")...)
-		lines = append(lines, chatDimStyle.Render("\u258a"))
+		if c.ToolCallCount > 0 && c.LastToolCall != "" {
+			lines = append(lines, chatDimStyle.Render(fmt.Sprintf("  %s (%d tool calls, last: %s)", c.SpinnerView, c.ToolCallCount, c.LastToolCall)))
+		} else {
+			lines = append(lines, chatDimStyle.Render("\u258a"))
+		}
 	} else if c.Streaming {
 		lines = append(lines, "")
-		lines = append(lines, chatDimStyle.Render(c.SpinnerView+" Thinking..."))
+		if c.ToolCallCount > 0 && c.LastToolCall != "" {
+			lines = append(lines, chatDimStyle.Render(fmt.Sprintf("%s Thinking... (%d tool calls, last: %s)", c.SpinnerView, c.ToolCallCount, c.LastToolCall)))
+		} else {
+			lines = append(lines, chatDimStyle.Render(c.SpinnerView+" Thinking..."))
+		}
 	} else if c.Status != "" {
 		lines = append(lines, "")
 		lines = append(lines, chatDimStyle.Render(c.SpinnerView+" "+c.Status))

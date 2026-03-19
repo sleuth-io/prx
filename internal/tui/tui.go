@@ -400,7 +400,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.chatActive && m.chatView.Streaming {
 				ctx, cancel := context.WithCancel(context.Background())
 				card.chatCancel = cancel
-				return m, sendChatCmd(ctx, msg.path, card.PR, card.Assessment, card.chatMessages, card.chatContext, m.program)
+				return m, sendChatCmd(ctx, msg.path, card.PR, card.Assessment, card.chatMessages, card.chatContext, m.app.Config.Review.Model, m.program)
 			}
 		}
 		return m, nil
@@ -408,6 +408,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case chatStatusMsg:
 		if card := m.currentCard(); card != nil && card.PR.Number == msg.prNumber && m.chatActive {
 			m.chatView.Status = msg.status
+			m.chatView.RebuildViewport()
+		}
+		return m, nil
+
+	case chatToolCallMsg:
+		if card := m.currentCard(); card != nil && card.PR.Number == msg.prNumber && m.chatActive {
+			m.chatView.ToolCallCount = msg.count
+			m.chatView.LastToolCall = msg.lastTool
 			m.chatView.RebuildViewport()
 		}
 		return m, nil
@@ -711,7 +719,7 @@ func (m *Model) sendChatMessage() tea.Cmd {
 	if card.worktreePath != "" {
 		ctx, cancel := context.WithCancel(context.Background())
 		card.chatCancel = cancel
-		return sendChatCmd(ctx, card.worktreePath, card.PR, card.Assessment, card.chatMessages, card.chatContext, m.program)
+		return sendChatCmd(ctx, card.worktreePath, card.PR, card.Assessment, card.chatMessages, card.chatContext, m.app.Config.Review.Model, m.program)
 	}
 	return nil
 }
