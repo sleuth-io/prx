@@ -1,4 +1,4 @@
-.PHONY: help run build install test lint format clean release prepush postpull
+.PHONY: help run build install test lint format clean release demo prepush postpull
 
 BINARY_NAME=prx
 MAIN_PATH=./cmd/prx
@@ -40,6 +40,11 @@ release: ## Create release with goreleaser
 
 init: ## Install dependencies
 	@go mod tidy
+
+demo: build ## Generate demo GIF (requires vhs)
+	@which vhs > /dev/null || (echo "vhs not found. Install from https://github.com/charmbracelet/vhs" && exit 1)
+	@PATH="$(CURDIR)/$(BUILD_DIR):$$PATH" vhs docs/demo.tape
+	@echo "Generated: docs/demo.gif"
 
 prepush: format lint test build ## Run before pushing
 

@@ -1,50 +1,137 @@
-# Reviews
+<div align="center">
 
-AI-powered PR risk triage tool. Scores open pull requests by blast radius using Claude, then presents them in a swipe-style web UI for fast human review.
+# prx
 
-## How it works
+### AI-powered PR triage for humans who review code.
+### See what needs your brain. Skip what doesn't.
 
-1. Fetches open PRs from a GitHub repo (via `gh` CLI)
-2. Claude assesses each PR using codebase exploration tools (read files, search code, list files)
-3. Scores five risk factors: blast radius, test coverage, sensitivity, complexity, scope
-4. Presents cards sorted by risk in a full-screen TikTok-style UI
+<br>
 
-## Quick start
+[![Downloads](https://img.shields.io/github/downloads/sleuth-io/prx/total?color=3B82F6)](https://github.com/sleuth-io/prx/releases)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-10B981.svg)](https://github.com/sleuth-io/prx/pulls)
+
+</div>
+
+![Demo](docs/demo.gif)
+
+## What is prx?
+
+prx is a terminal UI that helps you prioritize code review. It uses AI to score each PR on how much *human judgment* it requires — not to review the code for you, but to tell you where your time matters most.
+
+**For each PR, prx shows:**
+- Risk scores across configurable criteria (blast radius, intent clarity, irreversibility, domain knowledge, novelty)
+- A weighted verdict: APPROVE, REVIEW, or INVESTIGATE
+- Per-hunk annotations — trivial hunks auto-collapse so you see only what needs your brain
+- Inline comments, review history, and CI status
+
+**From the TUI you can:**
+- Approve, request changes, or merge PRs
+- Add comments (global or inline on specific lines)
+- Chat with Claude about the code in context
+- Navigate between PRs, files, and hunks with keyboard shortcuts
+
+## Install
+
+**From GitHub releases (macOS/Linux/Windows):**
+
+Download the latest binary from [Releases](https://github.com/sleuth-io/prx/releases).
+
+**From source:**
 
 ```bash
-# Install dependencies
-uv sync
-cd frontend && npm install && cd ..
-
-# Start backend (auto-detects repo from cwd, or pass explicitly)
-cd ~/dev/your-repo && uv run --project ~/dev/reviews reviews serve
-
-# Start frontend dev server (separate terminal)
-make dev-frontend
-
-# Open http://localhost:5173
+git clone https://github.com/sleuth-io/prx.git
+cd prx
+make install
 ```
 
-## CLI usage
+### Prerequisites
+
+- [GitHub CLI](https://cli.github.com/) (`gh`) — authenticated
+- [Claude Code](https://claude.ai/download) (`claude`) — for AI assessment
+
+## Usage
 
 ```bash
-# Score PRs and print a table
-cd ~/dev/your-repo && uv run --project ~/dev/reviews reviews triage
+# Run in the current repo
+prx
 
-# Or specify a repo explicitly
-uv run reviews triage --repo sleuth-io/pulse
+# Run against a different repo
+prx /path/to/repo
 ```
 
-## Requirements
+### Keyboard shortcuts
 
-- Python 3.12+
-- Node.js 18+
-- `gh` CLI (authenticated)
-- `ANTHROPIC_API_KEY` environment variable
+| Key | Action |
+|-----|--------|
+| `tab` | Cycle between panels |
+| `j/k` | Scroll up/down |
+| `n/p` | Next/previous PR |
+| `]/[` | Next/previous file |
+| `}/{` | Next/previous hunk |
+| `←/→` | Collapse/expand |
+| `a` | Approve PR |
+| `m` | Merge PR (own PRs) |
+| `r` | Request changes |
+| `c` | Comment (global or inline) |
+| `?` | Open AI chat |
+| `q` | Quit |
 
-## Architecture
+## Configuration
 
-- **Backend**: FastAPI + SQLite (via SQLModel) + pydantic-ai for Claude agent
-- **Frontend**: Vue 3 + TypeScript + Vite
-- **Scoring**: pydantic-ai agent with tools to explore the local codebase
-- **Actions**: Approve/reject via GitHub review API (`gh pr review`)
+Config file: `~/.config/prx/config.toml`
+
+```toml
+# Customize scoring criteria weights
+[[criteria]]
+name = "blast_radius"
+weight = 2.0  # double the weight of blast radius
+
+# Approval/review thresholds
+[thresholds]
+approve_below = 2.0
+review_above = 3.5
+```
+
+## License
+
+See LICENSE file for details.
+
+---
+
+<details>
+<summary>Development</summary>
+
+### Building from Source
+
+```bash
+make init           # Download dependencies
+make build          # Build binary
+make install        # Install to ~/.local/bin
+```
+
+### Testing
+
+```bash
+make test           # Run tests
+make lint           # Run linter
+make prepush        # Format, lint, test, build
+```
+
+### Releases
+
+Tag and push to trigger automated release via GoReleaser:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+### Demo GIF
+
+Requires [vhs](https://github.com/charmbracelet/vhs):
+
+```bash
+make demo
+```
+
+</details>
