@@ -19,12 +19,13 @@ import (
 type Server struct {
 	repo       string
 	prNumber   int
+	commitSHA  string
 	socketPath string
 }
 
 // New creates a new MCP server.
-func New(repo string, prNumber int, socketPath string) *Server {
-	return &Server{repo: repo, prNumber: prNumber, socketPath: socketPath}
+func New(repo string, prNumber int, commitSHA, socketPath string) *Server {
+	return &Server{repo: repo, prNumber: prNumber, commitSHA: commitSHA, socketPath: socketPath}
 }
 
 // ParseAndRun parses flags from args (e.g. os.Args[2:]) and runs the server.
@@ -33,10 +34,11 @@ func ParseAndRun(args []string) {
 	socket := fs.String("socket", "", "Unix socket path for permission requests")
 	repo := fs.String("repo", "", "GitHub repo (owner/name)")
 	pr := fs.String("pr", "", "PR number")
+	commit := fs.String("commit", "", "Head commit SHA (required for inline comments)")
 	_ = fs.Parse(args)
 
 	prNumber, _ := strconv.Atoi(*pr)
-	New(*repo, prNumber, *socket).Run()
+	New(*repo, prNumber, *commit, *socket).Run()
 }
 
 // JSON-RPC 2.0 types
@@ -105,13 +107,21 @@ var toolDefs = []map[string]interface{}{
 	},
 	{
 		"name":        "comment_on_pr",
-		"description": "Post a comment on the pull request",
+		"description": "Post a comment on the pull request. Optionally post as an inline code comment by providing path and line.",
 		"inputSchema": map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
 				"body": map[string]interface{}{
 					"type":        "string",
 					"description": "The comment body",
+				},
+				"path": map[string]interface{}{
+					"type":        "string",
+					"description": "File path for an inline comment (e.g. 'src/foo.go'). Must be combined with line.",
+				},
+				"line": map[string]interface{}{
+					"type":        "integer",
+					"description": "Line number in the diff for an inline comment. Must be combined with path.",
 				},
 			},
 			"required": []string{"body"},
@@ -350,6 +360,11 @@ func (s *Server) toolDescription(name string, args map[string]interface{}) strin
 		return fmt.Sprintf("Request changes on PR #%d: %s", s.prNumber, truncate(body, 100))
 	case "comment_on_pr":
 		body, _ := args["body"].(string)
+		path, _ := args["path"].(string)
+		if path != "" {
+			line, _ := args["line"].(float64)
+			return fmt.Sprintf("Post inline comment on PR #%d at %s:%d: %s", s.prNumber, path, int(line), truncate(body, 100))
+		}
 		return fmt.Sprintf("Post comment on PR #%d: %s", s.prNumber, truncate(body, 100))
 	case "merge_pr":
 		return fmt.Sprintf("Merge PR #%d", s.prNumber)
@@ -392,6 +407,17 @@ func (s *Server) executeAction(name string, args map[string]interface{}) (string
 		return "Changes requested successfully", nil
 	case "comment_on_pr":
 		body, _ := args["body"].(string)
+		path, _ := args["path"].(string)
+		if path != "" {
+			if s.commitSHA == "" {
+				return "", fmt.Errorf("commit SHA not available; cannot post inline comment")
+			}
+			lineF, _ := args["line"].(float64)
+			if err := github.PostInlineComment(s.repo, s.prNumber, s.commitSHA, path, int(lineF), body); err != nil {
+				return "", err
+			}
+			return "Inline comment posted successfully", nil
+		}
 		if err := github.PostComment(s.repo, s.prNumber, body); err != nil {
 			return "", err
 		}

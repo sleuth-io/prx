@@ -131,17 +131,13 @@ func buildContent(data RenderData, vpWidth int) string {
 	checks := "  " + renderChecksStatus(pr)
 
 	// PR description (collapsible, full-width below columns)
+	// Normalize Windows line endings so \r doesn't overwrite rendered text.
+	prBody := strings.ReplaceAll(pr.Body, "\r\n", "\n")
 	var bodyLine string
-	if pr.Body != "" {
-		if data.BodyExpanded {
-			bodyLine = "  " + style.DimStyle.Render("[- Description]")
-		} else {
-			summary := strings.SplitN(strings.TrimSpace(pr.Body), "\n", 2)[0]
-			if len(summary) > 60 {
-				summary = summary[:57] + "..."
-			}
-			bodyLine = "  " + style.DimStyle.Render("[+ "+summary+"]")
-		}
+	if data.BodyExpanded {
+		bodyLine = style.DimStyle.Render("  Description") + style.CollapseHint.Render("  [\u2190 collapse]")
+	} else {
+		bodyLine = style.DimStyle.Render("  Description") + style.CollapseHint.Render("  [\u2192 expand]")
 	}
 
 	var riskLine string
@@ -150,8 +146,8 @@ func buildContent(data RenderData, vpWidth int) string {
 	} else if data.ScoringErr != nil {
 		riskLine = "  " + verdictReject.Render(fmt.Sprintf("Scoring error: %v", data.ScoringErr))
 	} else {
-		bar := scoreBar(data.Score)
-		riskLine = fmt.Sprintf("  Risk %s %.1f  %s", bar, data.Score, renderVerdict(data.Verdict))
+		bar := ScoreBar(data.Score)
+		riskLine = fmt.Sprintf("  Risk %s %.1f  %s", bar, data.Score, RenderVerdict(data.Verdict))
 	}
 
 	leftLines := []string{meta, riskLine}
@@ -177,7 +173,7 @@ func buildContent(data RenderData, vpWidth int) string {
 		for _, c := range data.Criteria {
 			if f, ok := data.Assessment.Factors[c.Name]; ok {
 				padded := fmt.Sprintf("%-*s", maxLabelW, c.Label)
-				prefix := fmt.Sprintf("%s %s %d  ", boldStyle.Render("  "+padded), scoreBar(float64(f.Score)), f.Score)
+				prefix := fmt.Sprintf("%s %s %d  ", boldStyle.Render("  "+padded), ScoreBar(float64(f.Score)), f.Score)
 				reason := style.DimStyle.Width(reasonW).Render(f.Reason)
 				// Join prefix with first line, indent continuation lines
 				reasonLines := strings.Split(reason, "\n")
@@ -215,8 +211,8 @@ func buildContent(data RenderData, vpWidth int) string {
 	if bodyLine != "" {
 		cols = lipgloss.JoinVertical(lipgloss.Left, cols, bodyLine)
 	}
-	if data.BodyExpanded && pr.Body != "" {
-		rendered := style.RenderMarkdown(pr.Body, w-4)
+	if data.BodyExpanded && prBody != "" {
+		rendered := lipgloss.NewStyle().Foreground(lipgloss.Color("243")).Width(w - 4).Render("  " + strings.TrimSpace(prBody))
 		cols = lipgloss.JoinVertical(lipgloss.Left, cols, rendered)
 	}
 
@@ -321,7 +317,8 @@ func renderChecksStatus(pr *github.PR) string {
 	return style.DimStyle.Render("Checks: " + summary)
 }
 
-func scoreBar(score float64) string {
+// ScoreBar renders a 5-block bar colored by risk level.
+func ScoreBar(score float64) string {
 	filled := int(math.Round(score))
 	if filled > 5 {
 		filled = 5
@@ -342,7 +339,8 @@ func scoreBar(score float64) string {
 	return s.Render(bar)
 }
 
-func renderVerdict(verdict string) string {
+// RenderVerdict renders a colored verdict label.
+func RenderVerdict(verdict string) string {
 	switch verdict {
 	case "approve":
 		return verdictApprove.Render("APPROVE")

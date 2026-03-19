@@ -81,13 +81,28 @@ review_above = 3.5
 Always use `make` targets, never raw `go` commands directly.
 
 ```bash
-make build    # go build ./...
+make build    # go build ./... → outputs to dist/prx
 make run      # go run ./cmd/prx [path]
 make test     # go test ./...
 make lint     # golangci-lint run
 ```
 
-Log file: `~/.cache/prx/prx.log`
+- Built binary is at `dist/prx` — always use this, never the `prx` binary in the repo root
+- To test manually: `dist/prx /home/mrdon/dev/pulse` (or any repo path)
+- The first screen is Bulk Approve — type `n` to skip to the PR list
+- Log file: `~/.cache/prx/prx.log`
+
+## TUI testing
+
+Use tmux to verify TUI behavior:
+
+```bash
+tmux new-session -d -s tui-test -x 220 -y 50
+tmux send-keys -t tui-test "dist/prx /home/mrdon/dev/pulse" Enter
+# wait for load, then skip bulk approve
+tmux send-keys -t tui-test "n" ""
+tmux capture-pane -t tui-test -p
+```
 
 ## Performance goals
 

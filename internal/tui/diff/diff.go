@@ -18,7 +18,6 @@ var (
 	diffRemovedHighlightStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("210")).Background(lipgloss.Color("52"))
 	diffHunkStyle             = lipgloss.NewStyle().Foreground(lipgloss.Color("111")).Faint(true)
 	diffFileStyle             = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("215"))
-	diffCollapsed             = lipgloss.NewStyle().Foreground(lipgloss.Color("246"))
 
 	commentStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
 	commentAuthorStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("214"))
@@ -246,6 +245,91 @@ func (d *DiffView) ExpandCurrentFile() {
 	}
 }
 
+// ExpandMore expands one level at a time:
+//  1. filesGroup collapsed        → expand filesGroup
+//  2. any file collapsed          → expand all files
+//  3. any hunk collapsed          → expand all hunks
+//  4. any comment group collapsed → expand all comment groups
+func (d *DiffView) ExpandMore() {
+	if d.filesCollapsed {
+		d.filesCollapsed = false
+		d.rebuildViewport()
+		return
+	}
+	for _, f := range d.files {
+		if f.Collapsed {
+			for _, f2 := range d.files {
+				f2.Collapsed = false
+			}
+			d.rebuildViewport()
+			return
+		}
+	}
+	for _, f := range d.files {
+		for _, h := range f.Hunks {
+			if h.Collapsed {
+				for _, f2 := range d.files {
+					for _, h2 := range f2.Hunks {
+						h2.Collapsed = false
+					}
+				}
+				d.rebuildViewport()
+				return
+			}
+		}
+	}
+	for _, g := range d.commentGroups {
+		if g.Collapsed {
+			for _, g2 := range d.commentGroups {
+				g2.Collapsed = false
+			}
+			d.rebuildViewport()
+			return
+		}
+	}
+}
+
+// CollapseMore collapses one level at a time (reverse of ExpandMore):
+//  1. any comment group expanded → collapse all comment groups
+//  2. any hunk expanded          → collapse all hunks (keep files visible)
+//  3. any file expanded          → collapse all files (keep filesGroup visible)
+//  4. otherwise                  → collapse filesGroup
+func (d *DiffView) CollapseMore() {
+	for _, g := range d.commentGroups {
+		if !g.Collapsed {
+			for _, g2 := range d.commentGroups {
+				g2.Collapsed = true
+			}
+			d.rebuildViewport()
+			return
+		}
+	}
+	for _, f := range d.files {
+		for _, h := range f.Hunks {
+			if !h.Collapsed {
+				for _, f2 := range d.files {
+					for _, h2 := range f2.Hunks {
+						h2.Collapsed = true
+					}
+				}
+				d.rebuildViewport()
+				return
+			}
+		}
+	}
+	for _, f := range d.files {
+		if !f.Collapsed {
+			for _, f2 := range d.files {
+				f2.Collapsed = true
+			}
+			d.rebuildViewport()
+			return
+		}
+	}
+	d.filesCollapsed = true
+	d.rebuildViewport()
+}
+
 func (d *DiffView) AtTop() bool {
 	return d.cursorLine == 0
 }
@@ -454,35 +538,29 @@ func (d DiffView) ViewContent() string {
 }
 
 func (d DiffView) View() string {
-	titleStyle := style.PanelTitleBlurred
-	hint := " tab to focus"
+	hint := "tab to focus"
 	if d.Focused {
-		titleStyle = style.PanelTitleFocused
-		hint = " \u2190/\u2192 collapse/expand  [/] file  {/} hunk  c comment  tab to exit"
+		hint = "\u2190/\u2192 collapse/expand  [/] file  {/} hunk  c comment  tab to exit"
 	}
 	width := d.width
 	if width == 0 {
 		width = 80
 	}
-	diffTitle := d.TitleWithCommentCount()
-	title := titleStyle.Render(diffTitle) + style.DimPanelHint(hint, titleStyle, width, diffTitle)
+	title := style.RenderPanelTitle(d.TitleWithCommentCount(), hint, d.Focused, width)
 	return lipgloss.JoinVertical(lipgloss.Left, title, d.ViewContent())
 }
 
 // ViewWithModal renders the diff with modal injected at the cursor position.
 func (d DiffView) ViewWithModal(modal string) string {
-	titleStyle := style.PanelTitleBlurred
-	hint := " tab to focus"
+	hint := "tab to focus"
 	if d.Focused {
-		titleStyle = style.PanelTitleFocused
-		hint = " \u2190/\u2192 collapse/expand  [/] file  {/} hunk  c comment  tab to exit"
+		hint = "\u2190/\u2192 collapse/expand  [/] file  {/} hunk  c comment  tab to exit"
 	}
 	width := d.width
 	if width == 0 {
 		width = 80
 	}
-	diffTitle := d.TitleWithCommentCount()
-	title := titleStyle.Render(diffTitle) + style.DimPanelHint(hint, titleStyle, width, diffTitle)
+	title := style.RenderPanelTitle(d.TitleWithCommentCount(), hint, d.Focused, width)
 
 	vpHeight := d.viewport.Height
 
@@ -537,9 +615,9 @@ func (d DiffView) ViewWithModal(modal string) string {
 func renderCommentGroup(g *CommentGroup) string {
 	count := style.DimStyle.Render(fmt.Sprintf("(%d)", len(g.Comments)))
 	if g.Collapsed {
-		return "\U0001f4ac " + commentAuthorStyle.Render(g.Author) + " " + count + diffCollapsed.Render("  [\u2192 expand]")
+		return "\U0001f4ac " + commentAuthorStyle.Render(g.Author) + " " + count + style.CollapseHint.Render("  [\u2192 expand]")
 	}
-	return "\U0001f4ac " + commentAuthorStyle.Render(g.Author) + " " + count + diffCollapsed.Render("  [\u2190 collapse]")
+	return "\U0001f4ac " + commentAuthorStyle.Render(g.Author) + " " + count + style.CollapseHint.Render("  [\u2190 collapse]")
 }
 
 func renderComment(c *CommentItem, width int, grouped bool) []string {
@@ -563,7 +641,7 @@ func renderComment(c *CommentItem, width int, grouped bool) []string {
 		if len(first) > 80 {
 			first = first[:80] + "\u2026"
 		}
-		return []string{header + commentStyle.Render(first) + diffCollapsed.Render("  [\u2192 expand]")}
+		return []string{header + commentStyle.Render(first) + style.CollapseHint.Render("  [\u2192 expand]")}
 	}
 
 	if c.renderedBody == "" {
@@ -571,7 +649,7 @@ func renderComment(c *CommentItem, width int, grouped bool) []string {
 	}
 	body := commentExpandedStyle.Width(width - 4).Render(c.renderedBody)
 	var out []string
-	out = append(out, header+diffCollapsed.Render("  [\u2190 collapse]"))
+	out = append(out, header+style.CollapseHint.Render("  [\u2190 collapse]"))
 	out = append(out, strings.Split(body, "\n")...)
 	return out
 }

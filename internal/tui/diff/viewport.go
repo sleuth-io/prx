@@ -2,8 +2,10 @@ package diff
 
 import (
 	"fmt"
-	"github.com/charmbracelet/lipgloss"
 	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+	"github.com/sleuth-io/prx/internal/tui/style"
 )
 
 var (
@@ -88,10 +90,10 @@ func (d *DiffView) rebuildViewport() {
 	d.collapsibles = append(d.collapsibles, collapsible{lineIdx: len(lines), kind: kindFilesGroup})
 	filesHeader := diffFileStyle.Render(fmt.Sprintf("── Files (%d) ", len(d.files)))
 	if d.filesCollapsed {
-		filesHeader += diffCollapsed.Render(" [→ expand]")
+		filesHeader += style.CollapseHint.Render(" [→ expand]")
 		lines = append(lines, filesHeader)
 	} else {
-		filesHeader += diffCollapsed.Render(" [← collapse]")
+		filesHeader += style.CollapseHint.Render(" [← collapse]")
 		lines = append(lines, filesHeader)
 
 		for i, f := range d.files {
@@ -107,7 +109,7 @@ func (d *DiffView) rebuildViewport() {
 				fheader += diffHunkTrivialStyle.Render("(all trivial) ")
 			}
 			if f.Collapsed {
-				fheader += diffCollapsed.Render(" [→ expand]")
+				fheader += style.CollapseHint.Render(" [→ expand]")
 				lines = append(lines, fheader)
 			} else {
 				lines = append(lines, fheader)

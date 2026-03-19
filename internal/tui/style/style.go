@@ -9,6 +9,8 @@ import (
 )
 
 var (
+	// PanelTitleFocused / PanelTitleBlurred are kept for overlays (modals, etc.)
+	// that still want a solid background title bar.
 	PanelTitleFocused = lipgloss.NewStyle().
 				Bold(true).
 				Background(lipgloss.Color("62")).
@@ -19,27 +21,53 @@ var (
 				Foreground(lipgloss.Color("243")).
 				Padding(0, 1)
 
-	DimStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
+	DimStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
+	CollapseHint  = lipgloss.NewStyle().Foreground(lipgloss.Color("246"))
 )
 
-// DimPanelHint renders a right-aligned hint in the panel title bar.
-func DimPanelHint(hint string, titleStyle lipgloss.Style, width int, titleTexts ...string) string {
-	titleText := "Diff"
-	if len(titleTexts) > 0 {
-		titleText = titleTexts[0]
+// RenderPanelTitle renders a full-width horizontal rule with the panel name
+// and an optional hint embedded — no solid background fill.
+//
+//	focused:  [bright] ━━ Name ━━━━━━━━━━━━ hint ━━ [/bright]
+//	blurred:  [gray]   ── Name ──────────── hint ── [/gray]
+func RenderPanelTitle(name, hint string, focused bool, width int) string {
+	var sep string
+	var lineCol, nameCol lipgloss.Color
+	var hintFaint bool
+	if focused {
+		sep = "━"
+		lineCol = lipgloss.Color("75")  // bright blue
+		nameCol = lipgloss.Color("255") // bright white
+		hintFaint = false
+	} else {
+		sep = "─"
+		lineCol = lipgloss.Color("244") // visible mid-gray
+		nameCol = lipgloss.Color("250")
+		hintFaint = true
 	}
-	titleWidth := lipgloss.Width(titleStyle.Render(titleText))
-	remaining := width - titleWidth
-	if remaining <= 0 {
-		return ""
+	lineS := lipgloss.NewStyle().Foreground(lineCol)
+	nameS := lipgloss.NewStyle().Foreground(nameCol).Bold(focused)
+
+	left := lineS.Render(sep+sep+" ") + nameS.Render(name) + lineS.Render(" ")
+	var right string
+	if hint != "" {
+		hintS := lipgloss.NewStyle().Foreground(lineCol).Faint(hintFaint)
+		right = hintS.Render(hint) + lineS.Render(" "+sep+sep)
+	} else {
+		right = lineS.Render(sep + sep)
 	}
-	return PanelTitleBlurred.Faint(true).Width(remaining).Align(lipgloss.Right).Render(hint)
+
+	fill := width - lipgloss.Width(left) - lipgloss.Width(right)
+	if fill < 0 {
+		fill = 0
+	}
+	return left + lineS.Render(strings.Repeat(sep, fill)) + right
 }
 
 var mdRenderer *glamour.TermRenderer
 
 func init() {
-	mdRenderer, _ = glamour.NewTermRenderer(glamour.WithAutoStyle(), glamour.WithWordWrap(0))
+	mdRenderer, _ = glamour.NewTermRenderer(glamour.WithStandardStyle("dark"), glamour.WithWordWrap(0))
 }
 
 // RenderMarkdown renders markdown text for the terminal using glamour.
@@ -52,7 +80,7 @@ func RenderMarkdown(text string, width int) string {
 		return lipgloss.NewStyle().Width(width).Render(text)
 	}
 	// Glamour doesn't wrap (width=0), so wrap with lipgloss
-	result := strings.TrimRight(out, "\n")
+	result := strings.Trim(out, "\n")
 	if width > 0 {
 		result = lipgloss.NewStyle().Width(width).Render(result)
 	}

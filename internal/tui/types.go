@@ -35,6 +35,15 @@ type prDiffParsedMsg struct {
 	files    []*diff.File
 }
 
+// scene represents the top-level UI mode — which full-screen view is shown.
+type scene int
+
+const (
+	sceneReview      scene = iota // loading screen and main PR review
+	sceneBulkApprove              // bulk approve overlay
+)
+
+// focus represents which panel is active within sceneReview.
 type focus int
 
 const (

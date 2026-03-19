@@ -203,6 +203,7 @@ func sendChatCmd(ctx context.Context, worktreePath string, pr *github.PR, assess
 							"--socket=" + socketPath,
 							"--repo=" + repo,
 							"--pr=" + strconv.Itoa(pr.Number),
+							"--commit=" + pr.HeadSHA,
 						},
 					},
 				},

@@ -212,17 +212,14 @@ func (c View) ViewContent() string {
 }
 
 func (c View) View() string {
-	titleStyle := style.PanelTitleBlurred
-	hint := " tab to focus"
+	hint := "tab to focus"
 	if c.Focused {
-		titleStyle = style.PanelTitleFocused
-		hint = " enter send  alt+enter newline  esc back to diff"
+		hint = "enter send  alt+enter newline  esc back to diff"
 	}
 	width := c.width
 	if width == 0 {
 		width = 80
 	}
-	panelName := c.TabName()
-	title := titleStyle.Render(panelName) + style.DimPanelHint(hint, titleStyle, width, panelName)
+	title := style.RenderPanelTitle(c.TabName(), hint, c.Focused, width)
 	return lipgloss.JoinVertical(lipgloss.Left, title, c.ViewContent())
 }
