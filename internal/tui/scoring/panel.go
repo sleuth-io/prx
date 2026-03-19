@@ -13,30 +13,32 @@ import (
 	"github.com/sleuth-io/prx/internal/tui/style"
 )
 
+
 var (
 	verdictApprove = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("42"))
 	verdictReview  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("220"))
 	verdictReject  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("196"))
 
-	boldStyle   = lipgloss.NewStyle().Bold(true)
-	factorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("111"))
+	boldStyle = lipgloss.NewStyle().Bold(true)
 )
 
 // RenderData contains everything needed to render the assessment panel.
 type RenderData struct {
-	PR          *github.PR
-	Assessment  *ai.Assessment
-	Score       float64
-	Verdict     string
-	Scoring     bool
-	ScoringErr  error
-	SpinnerView string
-	Criteria    []config.Criterion
+	PR           *github.PR
+	Assessment   *ai.Assessment
+	Score        float64
+	Verdict      string
+	Scoring      bool
+	ScoringErr   error
+	SpinnerView  string
+	Criteria     []config.Criterion
+	BodyExpanded bool
 }
 
 // Panel is the assessment/scoring panel component.
 type Panel struct {
-	viewport viewport.Model
+	viewport      viewport.Model
+	contentHeight int
 }
 
 func New(width, height int) Panel {
@@ -57,9 +59,15 @@ func (p *Panel) GotoTop()         { p.viewport.GotoTop() }
 
 // SetContent rebuilds the assessment panel content from data.
 func (p *Panel) SetContent(data RenderData) {
-	p.viewport.SetContent(buildContent(data, p.viewport.Width))
+	content := buildContent(data, p.viewport.Width)
+	p.viewport.SetContent(content)
+	p.contentHeight = strings.Count(content, "\n") + 1
 }
 
+// ContentHeight returns the number of lines in the current content.
+func (p Panel) ContentHeight() int {
+	return p.contentHeight
+}
 
 // ViewContent renders just the viewport content (no title bar).
 func (p Panel) ViewContent() string {
@@ -107,33 +115,71 @@ func buildContent(data RenderData, vpWidth int) string {
 	leftW := w * 2 / 5
 	rightW := w - leftW
 
-	title := fmt.Sprintf("  %s  %s", boldStyle.Render(fmt.Sprintf("#%d", pr.Number)), pr.Title)
+	title := lipgloss.NewStyle().Width(w - 2).Render(
+		fmt.Sprintf("  %s  %s", boldStyle.Render(fmt.Sprintf("#%d", pr.Number)), pr.Title))
 
 	meta := fmt.Sprintf("  %s", style.DimStyle.Render(fmt.Sprintf("by %s  \u00b7  +%d/-%d  \u00b7  %d files  \u00b7  %s",
 		pr.Author, pr.Additions, pr.Deletions, pr.FilesChanged, pr.CreatedAt[:10])))
 	reviews := "  " + renderReviewStatus(pr)
 	checks := "  " + renderChecksStatus(pr)
 
-	leftLines := []string{meta, reviews, checks}
+	// PR description (collapsible, full-width below columns)
+	var bodyLine string
+	if pr.Body != "" {
+		if data.BodyExpanded {
+			bodyLine = "  " + style.DimStyle.Render("[- Description]")
+		} else {
+			summary := strings.SplitN(strings.TrimSpace(pr.Body), "\n", 2)[0]
+			if len(summary) > 60 {
+				summary = summary[:57] + "..."
+			}
+			bodyLine = "  " + style.DimStyle.Render("[+ "+summary+"]")
+		}
+	}
 
-	var rightLines []string
+	var riskLine string
 	if data.Scoring {
-		rightLines = append(rightLines, fmt.Sprintf("  %s Scoring with Claude...", data.SpinnerView))
+		riskLine = fmt.Sprintf("  %s Scoring with Claude...", data.SpinnerView)
 	} else if data.ScoringErr != nil {
-		rightLines = append(rightLines, "  "+verdictReject.Render(fmt.Sprintf("Scoring error: %v", data.ScoringErr)))
+		riskLine = "  " + verdictReject.Render(fmt.Sprintf("Scoring error: %v", data.ScoringErr))
 	} else {
 		bar := scoreBar(data.Score)
-		rightLines = append(rightLines,
-			fmt.Sprintf("  Risk %s %.1f  %s", bar, data.Score, renderVerdict(data.Verdict)))
+		riskLine = fmt.Sprintf("  Risk %s %.1f  %s", bar, data.Score, renderVerdict(data.Verdict))
+	}
 
-		if data.Assessment != nil {
-			var factorParts []string
-			for _, c := range data.Criteria {
-				if f, ok := data.Assessment.Factors[c.Name]; ok {
-					factorParts = append(factorParts, fmt.Sprintf("%s:%d", c.Label, f.Score))
+	leftLines := []string{meta, riskLine}
+	rightLines := []string{reviews, checks}
+
+	// Factor detail lines (below the two-column header)
+	var factorDetails []string
+	if data.Assessment != nil {
+		// Find max label width for alignment
+		maxLabelW := 0
+		for _, c := range data.Criteria {
+			if len(c.Label) > maxLabelW {
+				maxLabelW = len(c.Label)
+			}
+		}
+		// prefix width: 2 indent + label + 1 space + 5 bar + 1 space + 1 digit + 2 spaces = maxLabelW + 12
+		prefixW := maxLabelW + 12
+		reasonW := w - prefixW
+		if reasonW < 20 {
+			reasonW = 20
+		}
+		factorDetails = append(factorDetails, style.DimStyle.Render("  ── Risk Factors ──"))
+		for _, c := range data.Criteria {
+			if f, ok := data.Assessment.Factors[c.Name]; ok {
+				padded := fmt.Sprintf("%-*s", maxLabelW, c.Label)
+				prefix := fmt.Sprintf("%s %s %d  ", boldStyle.Render("  "+padded), scoreBar(float64(f.Score)), f.Score)
+				reason := style.DimStyle.Width(reasonW).Render(f.Reason)
+				// Join prefix with first line, indent continuation lines
+				reasonLines := strings.Split(reason, "\n")
+				factorDetails = append(factorDetails, prefix+reasonLines[0])
+				indent := strings.Repeat(" ", prefixW)
+				for _, rl := range reasonLines[1:] {
+					factorDetails = append(factorDetails, indent+rl)
 				}
 			}
-			rightLines = append(rightLines, "  "+factorStyle.Render(strings.Join(factorParts, "  ")))
 		}
 	}
 
@@ -151,6 +197,15 @@ func buildContent(data RenderData, vpWidth int) string {
 		lipgloss.JoinHorizontal(lipgloss.Top, leftCol, rightCol),
 	)
 
+	// PR description (collapsible, full-width below columns)
+	if bodyLine != "" {
+		cols = lipgloss.JoinVertical(lipgloss.Left, cols, bodyLine)
+	}
+	if data.BodyExpanded && pr.Body != "" {
+		rendered := style.RenderMarkdown(pr.Body, w-4)
+		cols = lipgloss.JoinVertical(lipgloss.Left, cols, rendered)
+	}
+
 	if data.Assessment == nil {
 		return cols
 	}
@@ -160,14 +215,30 @@ func buildContent(data RenderData, vpWidth int) string {
 	wrapStyle := lipgloss.NewStyle().Width(wrapW)
 	var below []string
 
-	if a.RiskSummary != "" {
-		below = append(below, "  "+style.DimStyle.Width(wrapW).Render(a.RiskSummary))
+	// Factor details first
+	below = append(below, factorDetails...)
+
+	// Then review notes
+	hasNotes := false
+	if a.RiskSummary != "" || a.ReviewNotes != "" {
+		below = append(below, style.DimStyle.Render("  ── Review Notes ──"))
+		hasNotes = true
 	}
-	for _, line := range strings.Split(a.ReviewNotes, "\n") {
-		if strings.TrimSpace(line) != "" {
-			below = append(below, "  "+wrapStyle.Render(line))
+	if a.RiskSummary != "" || a.ReviewNotes != "" {
+		if a.RenderedNotes == "" {
+			notes := ""
+			if a.RiskSummary != "" {
+				notes += "**" + a.RiskSummary + "**\n\n"
+			}
+			if a.ReviewNotes != "" {
+				notes += a.ReviewNotes
+			}
+			a.RenderedNotes = style.RenderMarkdown(notes, wrapW)
 		}
+		below = append(below, a.RenderedNotes)
 	}
+	_ = hasNotes
+	_ = wrapStyle
 	if len(below) == 0 {
 		return cols
 	}
@@ -269,3 +340,4 @@ func renderVerdict(verdict string) string {
 		return verdict
 	}
 }
+

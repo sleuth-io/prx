@@ -6,11 +6,17 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/sleuth-io/prx/internal/app"
+	"github.com/sleuth-io/prx/internal/buildinfo"
 	"github.com/sleuth-io/prx/internal/logger"
 	"github.com/sleuth-io/prx/internal/tui"
 )
 
 func main() {
+	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-v") {
+		fmt.Printf("prx %s (%s, %s)\n", buildinfo.Version, buildinfo.Commit, buildinfo.Date)
+		return
+	}
+
 	if err := logger.Init(); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not init log: %v\n", err)
 	}

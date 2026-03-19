@@ -91,16 +91,31 @@ func CurrentUser() (string, error) {
 }
 
 func MergePR(repo string, number int) error {
-	return exec.Command("gh", "pr", "merge", fmt.Sprintf("%d", number),
-		"--repo", repo, "--squash", "--delete-branch").Run()
+	out, err := exec.Command("gh", "pr", "merge", fmt.Sprintf("%d", number),
+		"--repo", repo, "--squash", "--delete-branch").CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg != "" {
+			return fmt.Errorf("%s", msg)
+		}
+		return err
+	}
+	return nil
 }
 
 func DetectRepo(dir string) (string, error) {
+	// Check if we're in a git repo first
+	gitCheck := exec.Command("git", "rev-parse", "--git-dir")
+	gitCheck.Dir = dir
+	if err := gitCheck.Run(); err != nil {
+		return "", fmt.Errorf("not a git repository — prx must be run inside a git repo")
+	}
+
 	cmd := exec.Command("git", "remote", "get-url", "origin")
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("git remote get-url origin: %w", err)
+		return "", fmt.Errorf("no 'origin' remote found — prx requires a GitHub remote")
 	}
 	url := strings.TrimSpace(string(out))
 	var path string

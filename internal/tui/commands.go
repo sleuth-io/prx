@@ -45,6 +45,7 @@ func scorePRCmd(pr *github.PR, a *app.App) tea.Cmd {
 
 		if assessment, ok := a.Cache.Get(key); ok {
 			logger.Info("PR #%d: cache hit", pr.Number)
+			assessment.DiffTruncated = len(pr.Diff) > 30000
 			return prScoredMsg{prNumber: pr.Number, assessment: &assessment, fromCache: true}
 		}
 

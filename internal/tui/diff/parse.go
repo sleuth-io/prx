@@ -62,12 +62,24 @@ func renderFileDiff(f *gitdiff.File) []*Hunk {
 		if startLine == 0 {
 			startLine = int(frag.OldPosition)
 		}
+		var adds, dels int
+		for _, l := range frag.Lines {
+			switch l.Op {
+			case gitdiff.OpAdd:
+				adds++
+			case gitdiff.OpDelete:
+				dels++
+			}
+		}
 		rendered, lineNums := renderFragmentLines(frag.Lines, lexer, int(frag.NewPosition))
 		hunks = append(hunks, &Hunk{
 			HeaderLine: hunkHeader,
 			Rendered:   rendered,
 			LineNums:   lineNums,
+			Additions:  adds,
+			Deletions:  dels,
 			StartLine:  startLine,
+			Collapsed:  true,
 		})
 	}
 	return hunks

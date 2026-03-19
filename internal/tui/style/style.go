@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/bubbles/viewport"
+	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -33,6 +34,29 @@ func DimPanelHint(hint string, titleStyle lipgloss.Style, width int, titleTexts 
 		return ""
 	}
 	return PanelTitleBlurred.Faint(true).Width(remaining).Align(lipgloss.Right).Render(hint)
+}
+
+var mdRenderer *glamour.TermRenderer
+
+func init() {
+	mdRenderer, _ = glamour.NewTermRenderer(glamour.WithAutoStyle(), glamour.WithWordWrap(0))
+}
+
+// RenderMarkdown renders markdown text for the terminal using glamour.
+func RenderMarkdown(text string, width int) string {
+	if mdRenderer == nil {
+		return lipgloss.NewStyle().Width(width).Render(text)
+	}
+	out, err := mdRenderer.Render(text)
+	if err != nil {
+		return lipgloss.NewStyle().Width(width).Render(text)
+	}
+	// Glamour doesn't wrap (width=0), so wrap with lipgloss
+	result := strings.TrimRight(out, "\n")
+	if width > 0 {
+		result = lipgloss.NewStyle().Width(width).Render(result)
+	}
+	return result
 }
 
 // RenderScrollbar returns a 1-char-wide vertical scrollbar for a viewport.

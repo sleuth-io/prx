@@ -3,7 +3,6 @@ package diff
 import (
 	"fmt"
 	"strings"
-
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -65,15 +64,23 @@ func (d *DiffView) rebuildViewport() {
 					comment: c,
 					group:   g,
 				})
-				lines = append(lines, renderComment(c, d.width, true, d.mdRenderer)...)
+				lines = append(lines, renderComment(c, d.width, true)...)
 			}
 			lines = append(lines, "")
 		}
 	}
 
-	// Build inline comment map: path -> comments
+	// Build inline comment map: "path:line" -> comments
+	type fileLineKey struct {
+		path string
+		line int
+	}
+	inlineByLine := map[fileLineKey][]*CommentItem{}
 	inlineByFile := map[string][]*CommentItem{}
 	for _, c := range d.inline {
+		if c.LineNum > 0 {
+			inlineByLine[fileLineKey{c.Path, c.LineNum}] = append(inlineByLine[fileLineKey{c.Path, c.LineNum}], c)
+		}
 		inlineByFile[c.Path] = append(inlineByFile[c.Path], c)
 	}
 
@@ -109,46 +116,83 @@ func (d *DiffView) rebuildViewport() {
 				gutterW := gutterWidth(f.Hunks)
 
 				for hi, h := range f.Hunks {
-					d.collapsibles = append(d.collapsibles, collapsible{
-						lineIdx: len(lines),
-						kind:    kindHunk,
-						fileIdx: i,
-						hunkIdx: hi,
-					})
-
 					if h.Collapsed {
 						content := hunkLabel(f.Name, h)
 						if h.TrivialReason != "" {
 							content += "  " + h.TrivialReason
 						}
 						content += "  [→ expand]"
-						lines = append(lines, diffHunkTrivialStyle.Width(d.width).Render(content))
+						hunkStyle := diffHunkTrivialStyle
+						if h.Annotated && !h.Trivial {
+							hunkStyle = diffHunkHeaderStyle
+						}
+						d.collapsibles = append(d.collapsibles, collapsible{
+							lineIdx:    len(lines),
+							kind:       kindHunk,
+							fileIdx:    i,
+							hunkIdx:    hi,
+							rawContent: content,
+							baseStyle:  hunkStyle,
+						})
+						lines = append(lines, hunkStyle.Width(d.width).Render(content))
 					} else {
 						content := hunkLabel(f.Name, h)
-						if !h.Trivial && h.TrivialReason != "" {
+						rawContent := content
+						if h.Annotated && !h.Trivial {
 							content += "  " + diffImportantStyle.Render(" "+h.TrivialReason+" ")
+							rawContent += "  " + h.TrivialReason
 						}
+						d.collapsibles = append(d.collapsibles, collapsible{
+							lineIdx:    len(lines),
+							kind:       kindHunk,
+							fileIdx:    i,
+							hunkIdx:    hi,
+							rawContent: rawContent,
+							baseStyle:  diffHunkHeaderStyle,
+						})
 						lines = append(lines, diffHunkHeaderStyle.Width(d.width).Render(content))
 						for li, rl := range h.Rendered {
+							var lineNum int
+							if li < len(h.LineNums) {
+								lineNum = h.LineNums[li]
+							}
 							var gutter string
-							if li < len(h.LineNums) && h.LineNums[li] > 0 {
-								gutter = diffLineNumStyle.Render(fmt.Sprintf("%*d ", gutterW, h.LineNums[li]))
+							if lineNum > 0 {
+								gutter = diffLineNumStyle.Render(fmt.Sprintf("%*d ", gutterW, lineNum))
 							} else {
 								gutter = diffLineNumStyle.Render(strings.Repeat(" ", gutterW+1))
 							}
 							lines = append(lines, gutter+rl)
+
+							// Insert inline comments after the line they reference
+							if lineNum > 0 {
+								key := fileLineKey{f.Name, lineNum}
+								for _, ic := range inlineByLine[key] {
+									lines = append(lines, "")
+									d.collapsibles = append(d.collapsibles, collapsible{
+										lineIdx: len(lines),
+										kind:    kindComment,
+										comment: ic,
+									})
+									lines = append(lines, renderComment(ic, d.width, false)...)
+								}
+							}
 						}
 					}
 				}
 
+				// Comments that couldn't be placed at a specific line (line == 0)
 				for _, c := range inlineByFile[f.Name] {
+					if c.LineNum > 0 {
+						continue // already rendered inline
+					}
 					lines = append(lines, "")
 					d.collapsibles = append(d.collapsibles, collapsible{
 						lineIdx: len(lines),
 						kind:    kindComment,
 						comment: c,
 					})
-					lines = append(lines, renderComment(c, d.width, false, d.mdRenderer)...)
+					lines = append(lines, renderComment(c, d.width, false)...)
 				}
 			}
 		}
@@ -172,10 +216,18 @@ func hunkLabel(fileName string, h *Hunk) string {
 			break
 		}
 	}
-	if allDeletions {
-		return "  " + fileName + " (deleted)"
+	var stats string
+	if h.Additions > 0 && h.Deletions > 0 {
+		stats = fmt.Sprintf(" +%d/-%d", h.Additions, h.Deletions)
+	} else if h.Additions > 0 {
+		stats = fmt.Sprintf(" +%d", h.Additions)
+	} else if h.Deletions > 0 {
+		stats = fmt.Sprintf(" -%d", h.Deletions)
 	}
-	return fmt.Sprintf("  %s:%d", fileName, h.StartLine)
+	if allDeletions {
+		return "  " + fileName + stats + " (deleted)"
+	}
+	return fmt.Sprintf("  %s:%d%s", fileName, h.StartLine, stats)
 }
 
 func allHunksTrivial(hunks []*Hunk) bool {
@@ -211,7 +263,22 @@ func (d *DiffView) syncViewport() {
 	lines := make([]string, len(d.lines))
 	copy(lines, d.lines)
 	if d.cursorLine >= 0 && d.cursorLine < len(lines) {
-		lines[d.cursorLine] = cursorLineStyle.Width(d.width).Render(lines[d.cursorLine])
+		// For hunk headers, re-render with a brighter cursor-aware style
+		rerendered := false
+		for _, c := range d.collapsibles {
+			if c.lineIdx == d.cursorLine && c.kind == kindHunk && c.rawContent != "" {
+				curStyle := cursorTrivialStyle
+				if c.baseStyle.GetBackground() == diffHunkHeaderStyle.GetBackground() {
+					curStyle = cursorHunkStyle
+				}
+				lines[d.cursorLine] = curStyle.Width(d.width).Render(c.rawContent)
+				rerendered = true
+				break
+			}
+		}
+		if !rerendered {
+			lines[d.cursorLine] = cursorLineStyle.Width(d.width).Render(lines[d.cursorLine])
+		}
 	}
 	d.viewport.SetContent(strings.Join(lines, "\n"))
 }

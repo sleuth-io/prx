@@ -28,6 +28,8 @@ type Assessment struct {
 	RiskSummary     string                 `json:"risk_summary"`
 	ReviewNotes     string                 `json:"review_notes"`
 	HunkAnnotations []HunkAnnotation       `json:"hunk_annotations,omitempty"`
+	DiffTruncated   bool                   `json:"-"` // set by caller, not from AI
+	RenderedNotes   string                 `json:"-"` // cached markdown render
 }
 
 func buildSystemPrompt(criteria []config.Criterion) string {
@@ -135,7 +137,8 @@ func AssessPR(pr *github.PR, repoDir string, criteria []config.Criterion) (*Asse
 		logger.Error("parsing assessment JSON for PR #%d: %v\nraw: %s", pr.Number, err, jsonStr)
 		return nil, fmt.Errorf("parsing assessment JSON: %w\nraw: %s", err, jsonStr)
 	}
-	logger.Info("PR #%d assessed with %d factors", pr.Number, len(assessment.Factors))
+	assessment.DiffTruncated = len(pr.Diff) > 30000
+	logger.Info("PR #%d assessed with %d factors (truncated=%v)", pr.Number, len(assessment.Factors), assessment.DiffTruncated)
 	return &assessment, nil
 }
 

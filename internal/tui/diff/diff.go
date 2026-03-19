@@ -6,7 +6,6 @@ import (
 
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/sleuth-io/prx/internal/github"
 	"github.com/sleuth-io/prx/internal/tui/style"
@@ -29,7 +28,9 @@ var (
 				BorderForeground(lipgloss.Color("214")).
 				PaddingLeft(1)
 
-	cursorLineStyle = lipgloss.NewStyle().Background(lipgloss.Color("237"))
+	cursorLineStyle    = lipgloss.NewStyle().Background(lipgloss.Color("238"))                                              // subtle bg for diff content
+	cursorHunkStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("230")).Background(lipgloss.Color("26"))   // bright on brighter blue
+	cursorTrivialStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Background(lipgloss.Color("240"))             // bright on lighter gray
 )
 
 // collapsibleKind identifies what kind of item is at a viewport line.
@@ -44,12 +45,14 @@ const (
 )
 
 type collapsible struct {
-	lineIdx int
-	kind    collapsibleKind
-	fileIdx int
-	hunkIdx int
-	comment *CommentItem
-	group   *CommentGroup
+	lineIdx    int
+	kind       collapsibleKind
+	fileIdx    int
+	hunkIdx    int
+	comment    *CommentItem
+	group      *CommentGroup
+	rawContent string         // unstyled text for re-rendering with cursor style
+	baseStyle  lipgloss.Style // style used when not under cursor
 }
 
 // Hunk is a single diff hunk within a file.
@@ -57,8 +60,11 @@ type Hunk struct {
 	HeaderLine    string
 	Rendered      []string
 	LineNums      []int
+	Additions     int
+	Deletions     int
 	Collapsed     bool
 	Trivial       bool
+	Annotated     bool // true if AI provided an annotation for this hunk
 	TrivialReason string
 	StartLine     int // new-file line number from fragment header
 }
@@ -74,6 +80,7 @@ type File struct {
 type CommentItem struct {
 	Author       string
 	Path         string // empty for top-level
+	LineNum      int    // diff line number (0 if not line-specific)
 	Body         string
 	Collapsed    bool
 	Pending      bool   // true while the API call is in-flight
@@ -100,17 +107,14 @@ type DiffView struct {
 	width          int
 	height         int
 	Focused        bool
-	mdRenderer     *glamour.TermRenderer
 }
 
 func NewDiffView(width, height int) DiffView {
 	vp := viewport.New(width, height)
-	r, _ := glamour.NewTermRenderer(glamour.WithAutoStyle())
 	return DiffView{
-		viewport:   vp,
-		width:      width,
-		height:     height,
-		mdRenderer: r,
+		viewport: vp,
+		width:    width,
+		height:   height,
 	}
 }
 
@@ -149,6 +153,7 @@ func (d *DiffView) SetParsedContent(files []*File, pr *github.PR) {
 		d.inline = append(d.inline, &CommentItem{
 			Author:    c.Author,
 			Path:      c.Path,
+			LineNum:   c.Line,
 			Body:      c.Body,
 			Collapsed: true,
 		})
@@ -350,6 +355,7 @@ func (d *DiffView) AddPendingComment(c github.ReviewComment) *CommentItem {
 	item := &CommentItem{
 		Author:    c.Author,
 		Path:      c.Path,
+		LineNum:   c.Line,
 		Body:      c.Body,
 		Collapsed: false,
 		Pending:   true,
@@ -431,6 +437,17 @@ func (d *DiffView) CurrentLineTarget() (path string, line int) {
 	return f.Name, ln
 }
 
+func (d DiffView) TitleWithCommentCount() string {
+	n := len(d.inline)
+	for _, g := range d.commentGroups {
+		n += len(g.Comments)
+	}
+	if n > 0 {
+		return fmt.Sprintf("Diff \U0001f4ac%d", n)
+	}
+	return "Diff"
+}
+
 // ViewContent renders the diff body without a title bar (for tabbed layout).
 func (d DiffView) ViewContent() string {
 	return lipgloss.JoinHorizontal(lipgloss.Top, d.viewport.View(), style.RenderScrollbar(d.viewport))
@@ -441,13 +458,14 @@ func (d DiffView) View() string {
 	hint := " tab to focus"
 	if d.Focused {
 		titleStyle = style.PanelTitleFocused
-		hint = " \u2190/\u2192 collapse/expand  ]/[ file  }/{ hunk  c comment  tab to exit"
+		hint = " \u2190/\u2192 collapse/expand  [/] file  {/} hunk  c comment  tab to exit"
 	}
 	width := d.width
 	if width == 0 {
 		width = 80
 	}
-	title := titleStyle.Render("Diff") + style.DimPanelHint(hint, titleStyle, width)
+	diffTitle := d.TitleWithCommentCount()
+	title := titleStyle.Render(diffTitle) + style.DimPanelHint(hint, titleStyle, width, diffTitle)
 	return lipgloss.JoinVertical(lipgloss.Left, title, d.ViewContent())
 }
 
@@ -457,13 +475,14 @@ func (d DiffView) ViewWithModal(modal string) string {
 	hint := " tab to focus"
 	if d.Focused {
 		titleStyle = style.PanelTitleFocused
-		hint = " \u2190/\u2192 collapse/expand  ]/[ file  }/{ hunk  c comment  tab to exit"
+		hint = " \u2190/\u2192 collapse/expand  [/] file  {/} hunk  c comment  tab to exit"
 	}
 	width := d.width
 	if width == 0 {
 		width = 80
 	}
-	title := titleStyle.Render("Diff") + style.DimPanelHint(hint, titleStyle, width)
+	diffTitle := d.TitleWithCommentCount()
+	title := titleStyle.Render(diffTitle) + style.DimPanelHint(hint, titleStyle, width, diffTitle)
 
 	vpHeight := d.viewport.Height
 
@@ -523,7 +542,7 @@ func renderCommentGroup(g *CommentGroup) string {
 	return "\U0001f4ac " + commentAuthorStyle.Render(g.Author) + " " + count + diffCollapsed.Render("  [\u2190 collapse]")
 }
 
-func renderComment(c *CommentItem, width int, grouped bool, r *glamour.TermRenderer) []string {
+func renderComment(c *CommentItem, width int, grouped bool) []string {
 	var header string
 	if grouped {
 		header = "  "
@@ -548,7 +567,7 @@ func renderComment(c *CommentItem, width int, grouped bool, r *glamour.TermRende
 	}
 
 	if c.renderedBody == "" {
-		c.renderedBody = renderMarkdown(r, c.Body)
+		c.renderedBody = style.RenderMarkdown(c.Body, width-4)
 	}
 	body := commentExpandedStyle.Width(width - 4).Render(c.renderedBody)
 	var out []string
@@ -557,16 +576,6 @@ func renderComment(c *CommentItem, width int, grouped bool, r *glamour.TermRende
 	return out
 }
 
-func renderMarkdown(r *glamour.TermRenderer, body string) string {
-	if r == nil {
-		return body
-	}
-	rendered, err := r.Render(body)
-	if err != nil {
-		return body
-	}
-	return strings.TrimRight(rendered, "\n")
-}
 
 func firstLine(s string) string {
 	if i := strings.IndexByte(s, '\n'); i >= 0 {

@@ -27,7 +27,7 @@ var (
 			Padding(0, 1)
 )
 
-const assessmentLines = 10
+const defaultAssessmentLines = 10
 
 type Model struct {
 	app            *app.App
@@ -44,6 +44,7 @@ type Model struct {
 	spinner        spinner.Model
 	modal          commentModal
 	actionStatus   string // e.g. "Merging…", "Approving…"
+	bodyExpanded   bool
 	program        *tea.Program
 	err            error
 	width          int
@@ -59,7 +60,7 @@ func New(a *app.App) Model {
 		spinner:         s,
 		diffView:        diff.NewDiffView(80, 20),
 		chatView:        chat.New(80, 20),
-		assessmentPanel: scoring.New(80, assessmentLines),
+		assessmentPanel: scoring.New(80, defaultAssessmentLines),
 	}
 }
 
@@ -129,13 +130,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "left":
 			if m.focus == focusDiff {
 				m.diffView.CollapseCurrentFile()
+				return m, nil
 			}
-			return m, nil
 		case "right":
 			if m.focus == focusDiff {
 				m.diffView.ExpandCurrentFile()
+				return m, nil
 			}
-			return m, nil
 		}
 
 		switch msg.String() {
@@ -205,6 +206,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			case "s":
 				m.navigatePR(1)
+			case "right":
+				if !m.bodyExpanded {
+					m.bodyExpanded = true
+					m.rebuildAssessment()
+				}
+			case "left":
+				if m.bodyExpanded {
+					m.bodyExpanded = false
+					m.rebuildAssessment()
+				}
 			case "c":
 				if card := m.currentCard(); card != nil {
 					m.openCommentModal(card, false, "", 0)
@@ -237,6 +248,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.chatView.SpinnerView = m.spinner.View()
 			m.chatView.RebuildViewport()
 		}
+		// Update the assessment panel spinner if the current card is scoring.
+		if card := m.currentCard(); card != nil && card.Scoring {
+			m.refreshSpinner()
+		}
+		// Footer spinner animates automatically via m.spinner.View() in renderFooter()
 		return m, cmd
 
 	case prListFetchedMsg:
@@ -327,8 +343,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case actionDoneMsg:
+		if msg.err != nil {
+			m.actionStatus = fmt.Sprintf("%s failed: %s", msg.action, msg.err)
+			return m, nil
+		}
 		m.actionStatus = ""
-		if msg.err == nil && m.current < len(m.cards)-1 {
+		if m.current < len(m.cards)-1 {
 			m.current++
 			m.loadCurrentDiff()
 			m.rebuildAssessment()
@@ -490,6 +510,7 @@ func (m *Model) navigatePR(delta int) {
 		return
 	}
 	m.current = next
+	m.bodyExpanded = false
 	m.assessmentPanel.GotoTop()
 	m.loadCurrentDiff()
 	m.rebuildAssessment()
@@ -514,10 +535,26 @@ func (m *Model) loadCurrentDiff() {
 	}
 }
 
+func (m *Model) assessmentHeight() int {
+	maxH := m.height * 2 / 5
+	if maxH < defaultAssessmentLines {
+		maxH = defaultAssessmentLines
+	}
+	contentH := m.assessmentPanel.ContentHeight() + 1 // +1 for title bar
+	if contentH < defaultAssessmentLines {
+		contentH = defaultAssessmentLines
+	}
+	if contentH > maxH {
+		return maxH
+	}
+	return contentH
+}
+
 func (m *Model) resizeDiffView() {
 	footerH := 1
 	borderH := 1
-	diffH := m.height - footerH - assessmentLines - borderH
+	aH := m.assessmentHeight()
+	diffH := m.height - footerH - aH - borderH
 	if diffH < 4 {
 		diffH = 4
 	}
@@ -527,8 +564,7 @@ func (m *Model) resizeDiffView() {
 	if w == 0 {
 		w = 80
 	}
-	m.assessmentPanel.SetSize(w, assessmentLines)
-	m.rebuildAssessment()
+	m.assessmentPanel.SetSize(w, aH)
 }
 
 func (m *Model) rebuildAssessment() {
@@ -537,15 +573,38 @@ func (m *Model) rebuildAssessment() {
 	}
 	card := m.cards[m.current]
 	m.assessmentPanel.SetContent(scoring.RenderData{
-		PR:          card.PR,
-		Assessment:  card.Assessment,
-		Score:       card.WeightedScore,
-		Verdict:     card.Verdict,
-		Scoring:     card.Scoring,
-		ScoringErr:  card.ScoringErr,
-		SpinnerView: m.spinner.View(),
-		Criteria:    m.app.Config.Criteria,
+		PR:           card.PR,
+		Assessment:   card.Assessment,
+		Score:        card.WeightedScore,
+		Verdict:      card.Verdict,
+		Scoring:      card.Scoring,
+		ScoringErr:   card.ScoringErr,
+		SpinnerView:  m.spinner.View(),
+		Criteria:     m.app.Config.Criteria,
+		BodyExpanded: m.bodyExpanded,
 	})
+	m.resizeDiffView()
+}
+
+// refreshSpinner updates only the spinner frame in the assessment panel
+// without triggering a full resize/rebuild. Called on every spinner tick.
+func (m *Model) refreshSpinner() {
+	if m.current >= len(m.cards) {
+		return
+	}
+	card := m.cards[m.current]
+	m.assessmentPanel.SetContent(scoring.RenderData{
+		PR:           card.PR,
+		Assessment:   card.Assessment,
+		Score:        card.WeightedScore,
+		Verdict:      card.Verdict,
+		Scoring:      card.Scoring,
+		ScoringErr:   card.ScoringErr,
+		SpinnerView:  m.spinner.View(),
+		Criteria:     m.app.Config.Criteria,
+		BodyExpanded: m.bodyExpanded,
+	})
+	// Intentionally skip resizeDiffView() — just update content, not layout
 }
 
 func (m *Model) openCommentModal(card *PRCard, isInline bool, path string, line int) {
@@ -695,9 +754,9 @@ func (m Model) View() string {
 	if m.focus == focusAssessment {
 		var hint string
 		if card := m.currentCard(); card != nil && m.isOwnPR(card) {
-			hint = " m merge  c comment  s skip  n/p navigate  j/k scroll  tab to diff"
+			hint = " m merge  ←/→ description  c comment  s skip  n/p navigate  j/k scroll  tab to diff"
 		} else {
-			hint = " a approve  r request-changes  c comment  s skip  n/p navigate  j/k scroll  tab to diff"
+			hint = " a approve  r request-changes  ←/→ description  c comment  s skip  n/p navigate  j/k scroll  tab to diff"
 		}
 		assessmentTitle = style.PanelTitleFocused.Render("Assessment") + style.DimPanelHint(hint, style.PanelTitleFocused, width, "Assessment")
 	} else {
@@ -764,11 +823,12 @@ var (
 )
 
 func (m Model) renderTabBar(width int, diffActive, chatActive bool) string {
+	diffTabName := m.diffView.TitleWithCommentCount()
 	var diffTab, chatTab string
 	if diffActive {
-		diffTab = tabActive.Render("Diff")
+		diffTab = tabActive.Render(diffTabName)
 	} else {
-		diffTab = tabInactive.Render("Diff")
+		diffTab = tabInactive.Render(diffTabName)
 	}
 
 	chatName := m.chatView.TabName()
@@ -783,7 +843,7 @@ func (m Model) renderTabBar(width int, diffActive, chatActive bool) string {
 
 	var hint string
 	if diffActive && m.focus == focusDiff {
-		hint = "\u2190/\u2192 collapse/expand  ]/[ file  }/{ hunk  c comment  ? chat"
+		hint = "\u2190/\u2192 collapse/expand  [/] file  {/} hunk  c comment  ? chat"
 	} else if chatActive && m.focus == focusChat {
 		hint = "enter send  alt+enter newline  esc stop/close"
 	}
