@@ -19,7 +19,7 @@ var (
 			Foreground(lipgloss.Color("42")).Bold(true)
 	errorStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("196"))
-	dimStyle = style.DimStyle
+	dimStyle    = style.DimStyle
 	footerStyle = lipgloss.NewStyle().
 			Background(lipgloss.Color("237")).
 			Foreground(lipgloss.Color("250")).
@@ -81,14 +81,14 @@ type approveResult struct {
 
 // Model is the bulk approve screen.
 type Model struct {
-	items      []Item
-	selected   map[int]bool  // PR number -> selected
-	results    map[int]error // PR number -> nil (success) or error; nil map = not done
-	cursor     int
-	approving  bool
-	repo       string
-	width      int
-	height     int
+	items       []Item
+	selected    map[int]bool  // PR number -> selected
+	results     map[int]error // PR number -> nil (success) or error; nil map = not done
+	cursor      int
+	approving   bool
+	repo        string
+	width       int
+	height      int
 	spinnerView string
 }
 

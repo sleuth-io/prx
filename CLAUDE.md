@@ -85,6 +85,7 @@ make build    # go build ./... → outputs to dist/prx
 make run      # go run ./cmd/prx [path]
 make test     # go test ./...
 make lint     # golangci-lint run
+make prepush  # format + lint + test + build — run before every commit
 ```
 
 - Built binary is at `dist/prx` — always use this, never the `prx` binary in the repo root

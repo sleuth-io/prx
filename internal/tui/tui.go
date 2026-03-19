@@ -25,31 +25,31 @@ var footerStyle = lipgloss.NewStyle().
 const defaultAssessmentLines = 10
 
 type Model struct {
-	app             *app.App
-	cards           []*PRCard
-	total           int
-	fetching        int // PRs whose details are still being fetched
-	scoring         int // PRs whose assessments are still in progress
-	current         int
-	scene           scene
-	focus           focus
-	diffView        diff.DiffView
-	chatView        chat.View
-	chatActive      bool // true when chat panel is shown instead of diff
-	assessmentPanel scoring.Panel
-	spinner         spinner.Model
-	modal           commentModal
-	confirm         *confirmDialog
-	actionStatus    string // e.g. "Merging…", "Approving…"
-	bodyExpanded    bool
-	program         *tea.Program
-	err             error
-	width           int
-	height          int
-	permSocketPath  string
-	permCleanup     func()
-	pendingPerm     *permRequestMsg
-	bulkApprove     bulkapprove.Model
+	app              *app.App
+	cards            []*PRCard
+	total            int
+	fetching         int // PRs whose details are still being fetched
+	scoring          int // PRs whose assessments are still in progress
+	current          int
+	scene            scene
+	focus            focus
+	diffView         diff.DiffView
+	chatView         chat.View
+	chatActive       bool // true when chat panel is shown instead of diff
+	assessmentPanel  scoring.Panel
+	spinner          spinner.Model
+	modal            commentModal
+	confirm          *confirmDialog
+	actionStatus     string // e.g. "Merging…", "Approving…"
+	bodyExpanded     bool
+	program          *tea.Program
+	err              error
+	width            int
+	height           int
+	permSocketPath   string
+	permCleanup      func()
+	pendingPerm      *permRequestMsg
+	bulkApprove      bulkapprove.Model
 	bulkApproveShown bool // true once auto-shown this session
 }
 

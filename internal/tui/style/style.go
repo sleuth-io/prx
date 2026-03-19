@@ -21,8 +21,8 @@ var (
 				Foreground(lipgloss.Color("243")).
 				Padding(0, 1)
 
-	DimStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
-	CollapseHint  = lipgloss.NewStyle().Foreground(lipgloss.Color("246"))
+	DimStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
+	CollapseHint = lipgloss.NewStyle().Foreground(lipgloss.Color("246"))
 )
 
 // RenderPanelTitle renders a full-width horizontal rule with the panel name
