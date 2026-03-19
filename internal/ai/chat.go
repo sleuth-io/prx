@@ -20,7 +20,8 @@ type DiffContext struct {
 }
 
 // BuildChatPrompt constructs the prompt for an interactive chat session about a PR.
-func BuildChatPrompt(pr *github.PR, assessment *Assessment, history []ChatMessage, ctx *DiffContext) string {
+// availableActions lists MCP tool names (e.g. "mcp__prx__approve_pr") that Claude may call.
+func BuildChatPrompt(pr *github.PR, assessment *Assessment, history []ChatMessage, ctx *DiffContext, availableActions []string) string {
 	var sb strings.Builder
 
 	sb.WriteString(`You are helping a code reviewer understand a pull request. You have tools to explore the codebase. Answer the reviewer's question concisely.
@@ -115,6 +116,25 @@ func BuildChatPrompt(pr *github.PR, assessment *Assessment, history []ChatMessag
 				fmt.Fprintf(&sb, "\nAssistant: %s\n", msg.Content)
 			}
 		}
+	}
+
+	// Available PR actions
+	if len(availableActions) > 0 {
+		sb.WriteString("\n## Available PR Actions\n")
+		sb.WriteString("You can take the following actions if the reviewer explicitly asks:\n")
+		for _, a := range availableActions {
+			switch a {
+			case "mcp__prx__comment_on_pr":
+				sb.WriteString("- comment_on_pr: post a comment on the PR\n")
+			case "mcp__prx__approve_pr":
+				sb.WriteString("- approve_pr: approve the PR\n")
+			case "mcp__prx__request_changes":
+				sb.WriteString("- request_changes: request changes on the PR\n")
+			case "mcp__prx__merge_pr":
+				sb.WriteString("- merge_pr: merge the PR\n")
+			}
+		}
+		sb.WriteString("Only use these when explicitly asked. The user will be prompted to confirm before execution.\n")
 	}
 
 	// Final instruction

@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand"
+	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -36,6 +38,34 @@ func fetchPRDetailsCmd(raw map[string]any, a *app.App) tea.Cmd {
 	return func() tea.Msg {
 		pr, err := github.FetchPRDetails(a.Repo, raw)
 		return prDetailsFetchedMsg{pr: pr, raw: raw, err: err}
+	}
+}
+
+func refreshPRCmd(pr *github.PR, a *app.App) tea.Cmd {
+	return func() tea.Msg {
+		activity, err := github.FetchPRActivity(a.Repo, pr.Number)
+		if err != nil {
+			return prRefreshedMsg{prNumber: pr.Number, err: err}
+		}
+		var newDiff string
+		if activity.HeadSHA != "" && activity.HeadSHA != pr.HeadSHA {
+			logger.Info("PR #%d: SHA changed (%s → %s), re-fetching diff", pr.Number, pr.HeadSHA[:8], activity.HeadSHA[:8])
+			newDiff, _ = github.FetchDiff(a.Repo, pr.Number)
+		}
+		return prRefreshedMsg{prNumber: pr.Number, activity: activity, newDiff: newDiff}
+	}
+}
+
+// forceScorePRCmd scores a PR unconditionally, bypassing the cache.
+func forceScorePRCmd(pr *github.PR, a *app.App) tea.Cmd {
+	return func() tea.Msg {
+		assessment, err := ai.AssessPR(pr, a.RepoDir, a.Config.Criteria, a.Config.Review.Model)
+		if err != nil {
+			return prScoredMsg{prNumber: pr.Number, err: err}
+		}
+		key := cache.Key(a.Repo, pr.Number, pr.Diff, reviewsText(pr), a.Config.Criteria)
+		a.Cache.Set(key, *assessment)
+		return prScoredMsg{prNumber: pr.Number, assessment: assessment}
 	}
 }
 
@@ -145,21 +175,67 @@ func removeWorktreeCmd(repoDir, path string) tea.Cmd {
 	}
 }
 
-func sendChatCmd(ctx context.Context, worktreePath string, pr *github.PR, assessment *ai.Assessment, messages []chat.Message, diffCtx *ai.DiffContext, model string, program *tea.Program) tea.Cmd {
+func sendChatCmd(ctx context.Context, worktreePath string, pr *github.PR, assessment *ai.Assessment, messages []chat.Message, diffCtx *ai.DiffContext, model string, repo string, isOwnPR bool, socketPath string, program *tea.Program) tea.Cmd {
 	return func() tea.Msg {
 		history := make([]ai.ChatMessage, len(messages))
 		for i, m := range messages {
 			history[i] = ai.ChatMessage{Role: m.Role, Content: m.Content}
 		}
 
-		prompt := ai.BuildChatPrompt(pr, assessment, history, diffCtx)
+		var actionTools []string
+		if isOwnPR {
+			actionTools = []string{"mcp__prx__comment_on_pr", "mcp__prx__merge_pr"}
+		} else {
+			actionTools = []string{"mcp__prx__comment_on_pr", "mcp__prx__approve_pr", "mcp__prx__request_changes"}
+		}
+
+		// Write a temp MCP config so Claude can call our mcp-server subprocess.
+		var mcpConfigFile string
+		binPath, binErr := os.Executable()
+		if binErr == nil && socketPath != "" {
+			mcpCfg := map[string]interface{}{
+				"mcpServers": map[string]interface{}{
+					"prx": map[string]interface{}{
+						"command": binPath,
+						"args": []string{
+							"mcp-server",
+							"--socket=" + socketPath,
+							"--repo=" + repo,
+							"--pr=" + strconv.Itoa(pr.Number),
+						},
+					},
+				},
+			}
+			if cfgBytes, err := json.Marshal(mcpCfg); err == nil {
+				if tmp, err := os.CreateTemp("", "prx-mcp-*.json"); err == nil {
+					mcpConfigFile = tmp.Name()
+					_, _ = tmp.Write(cfgBytes)
+					_ = tmp.Close()
+					defer func() { _ = os.Remove(mcpConfigFile) }()
+				}
+			}
+		}
+
+		var availableActions []string
+		if socketPath != "" {
+			availableActions = actionTools
+		}
+
+		prompt := ai.BuildChatPrompt(pr, assessment, history, diffCtx, availableActions)
+		allowedTools := "Read,Glob,Grep"
+		if len(availableActions) > 0 {
+			allowedTools += "," + strings.Join(availableActions, ",")
+		}
 		args := []string{
 			"-p", prompt,
 			"--output-format", "stream-json",
 			"--verbose",
-			"--allowedTools", "Read,Glob,Grep",
+			"--allowedTools", allowedTools,
 			"--strict-mcp-config",
 			"--no-session-persistence",
+		}
+		if mcpConfigFile != "" {
+			args = append(args, "--mcp-config", mcpConfigFile)
 		}
 		if model != "" {
 			args = append(args, "--model", model)
@@ -299,4 +375,3 @@ func toolSummary(name string, input map[string]interface{}) string {
 	}
 	return name
 }
-

@@ -13,7 +13,6 @@ import (
 	"github.com/sleuth-io/prx/internal/tui/style"
 )
 
-
 var (
 	verdictApprove = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("42"))
 	verdictReview  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("220"))
@@ -340,4 +339,3 @@ func renderVerdict(verdict string) string {
 		return verdict
 	}
 }
-

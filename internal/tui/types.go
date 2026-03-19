@@ -22,12 +22,12 @@ type PRCard struct {
 	Verdict            string
 	Scoring            bool
 	ScoringErr         error
-	parsedFiles        []*diff.File     // pre-parsed diff files (nil until ready)
-	annotationsApplied bool             // true once hunk annotations have been applied
-	chatMessages       []chat.Message   // in-memory chat history per PR
-	chatContext        *ai.DiffContext  // file/line the reviewer was looking at when chat opened
-	chatCancel         func()           // cancels the running claude process (nil if not streaming)
-	worktreePath       string           // git worktree path for chat (empty until created)
+	parsedFiles        []*diff.File    // pre-parsed diff files (nil until ready)
+	annotationsApplied bool            // true once hunk annotations have been applied
+	chatMessages       []chat.Message  // in-memory chat history per PR
+	chatContext        *ai.DiffContext // file/line the reviewer was looking at when chat opened
+	chatCancel         func()          // cancels the running claude process (nil if not streaming)
+	worktreePath       string          // git worktree path for chat (empty until created)
 }
 
 type prDiffParsedMsg struct {
@@ -113,5 +113,17 @@ type chatToolCallMsg struct {
 type chatWorktreeReadyMsg struct {
 	prNumber int
 	path     string
+	err      error
+}
+
+type permRequestMsg struct {
+	description string
+	respond     func(allowed bool)
+}
+
+type prRefreshedMsg struct {
+	prNumber int
+	activity *github.PRActivity
+	newDiff  string // non-empty when head SHA changed and diff was re-fetched
 	err      error
 }

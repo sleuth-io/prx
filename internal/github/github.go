@@ -257,6 +257,172 @@ func FetchPRDetails(repo string, raw map[string]any) (*PR, error) {
 	}, nil
 }
 
+// PRActivity holds the mutable parts of a PR — everything except the diff.
+// Also includes metadata that can change (title, body, head SHA).
+// Used for lightweight refreshes after actions like comment/approve/merge.
+type PRActivity struct {
+	// Metadata that may change between refreshes
+	Title       string
+	Body        string
+	HeadSHA     string
+	HeadRefName string
+	// Live activity
+	Checks         []CheckStatus
+	Reviews        []ReviewComment
+	InlineComments []ReviewComment
+	Comments       []ReviewComment
+}
+
+// FetchPRActivity re-fetches activity data and current metadata for an existing PR,
+// without re-downloading the diff. The returned PRActivity includes Title, Body,
+// HeadSHA, HeadRefName so callers can detect renames, description edits, and new commits.
+func FetchPRActivity(repo string, number int) (*PRActivity, error) {
+	var (
+		wg             sync.WaitGroup
+		title          string
+		body           string
+		headSHA        string
+		headRefName    string
+		checks         []CheckStatus
+		reviews        []ReviewComment
+		inlineComments []ReviewComment
+		comments       []ReviewComment
+	)
+	wg.Add(5)
+	go func() {
+		defer wg.Done()
+		out, err := exec.Command("gh", "pr", "view", fmt.Sprintf("%d", number),
+			"--repo", repo, "--json", "title,body,headRefOid,headRefName").Output()
+		if err != nil {
+			logger.Error("PR #%d: pr view meta: %v", number, err)
+			return
+		}
+		var meta struct {
+			Title       string `json:"title"`
+			Body        string `json:"body"`
+			HeadRefOid  string `json:"headRefOid"`
+			HeadRefName string `json:"headRefName"`
+		}
+		if err := json.Unmarshal(out, &meta); err != nil {
+			logger.Error("PR #%d: parse pr view meta: %v", number, err)
+			return
+		}
+		title, body, headSHA, headRefName = meta.Title, meta.Body, meta.HeadRefOid, meta.HeadRefName
+	}()
+	go func() {
+		defer wg.Done()
+		var err error
+		checks, err = getChecks(repo, number)
+		if err != nil {
+			logger.Error("PR #%d: getChecks: %v", number, err)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		var err error
+		reviews, err = getReviews(repo, number)
+		if err != nil {
+			logger.Error("PR #%d: getReviews: %v", number, err)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		var err error
+		inlineComments, err = getInlineComments(repo, number)
+		if err != nil {
+			logger.Error("PR #%d: getInlineComments: %v", number, err)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		var err error
+		comments, err = getComments(repo, number)
+		if err != nil {
+			logger.Error("PR #%d: getComments: %v", number, err)
+		}
+	}()
+	wg.Wait()
+	return &PRActivity{
+		Title:          title,
+		Body:           body,
+		HeadSHA:        headSHA,
+		HeadRefName:    headRefName,
+		Checks:         checks,
+		Reviews:        reviews,
+		InlineComments: inlineComments,
+		Comments:       comments,
+	}, nil
+}
+
+// FetchDiff returns the unified diff for a PR.
+func FetchDiff(repo string, number int) (string, error) {
+	return getDiff(repo, number)
+}
+
+// FetchPRFull re-fetches all PR data (diff + activity) for an existing PR.
+// Metadata fields (title, author, body, etc.) are copied from existing.
+// Used for force-refresh where the diff may also have changed.
+func FetchPRFull(repo string, existing *PR) (*PR, error) {
+	var (
+		wg             sync.WaitGroup
+		diff           string
+		checks         []CheckStatus
+		reviews        []ReviewComment
+		inlineComments []ReviewComment
+		comments       []ReviewComment
+	)
+	wg.Add(5)
+	go func() {
+		defer wg.Done()
+		var err error
+		diff, err = getDiff(repo, existing.Number)
+		if err != nil {
+			logger.Error("PR #%d: getDiff: %v", existing.Number, err)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		var err error
+		checks, err = getChecks(repo, existing.Number)
+		if err != nil {
+			logger.Error("PR #%d: getChecks: %v", existing.Number, err)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		var err error
+		reviews, err = getReviews(repo, existing.Number)
+		if err != nil {
+			logger.Error("PR #%d: getReviews: %v", existing.Number, err)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		var err error
+		inlineComments, err = getInlineComments(repo, existing.Number)
+		if err != nil {
+			logger.Error("PR #%d: getInlineComments: %v", existing.Number, err)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		var err error
+		comments, err = getComments(repo, existing.Number)
+		if err != nil {
+			logger.Error("PR #%d: getComments: %v", existing.Number, err)
+		}
+	}()
+	wg.Wait()
+
+	fresh := *existing // copy metadata
+	fresh.Diff = diff
+	fresh.Checks = checks
+	fresh.Reviews = reviews
+	fresh.InlineComments = inlineComments
+	fresh.Comments = comments
+	return &fresh, nil
+}
+
 func getDiff(repo string, number int) (string, error) {
 	out, err := exec.Command("gh", "pr", "diff", fmt.Sprintf("%d", number), "--repo", repo).Output()
 	if err != nil {

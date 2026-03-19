@@ -2,15 +2,15 @@ package diff
 
 import (
 	"fmt"
-	"strings"
 	"github.com/charmbracelet/lipgloss"
+	"strings"
 )
 
 var (
-	diffHunkHeaderStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("230")).Background(lipgloss.Color("24"))  // bright on blue — needs attention
-	diffHunkTrivialStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("250")).Background(lipgloss.Color("238"))            // light on dark gray — skippable
+	diffHunkHeaderStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("230")).Background(lipgloss.Color("24")) // bright on blue — needs attention
+	diffHunkTrivialStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("250")).Background(lipgloss.Color("238"))           // light on dark gray — skippable
 	diffImportantStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#000000")).Background(lipgloss.Color("214")).Padding(0, 1)
-	diffLineNumStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	diffLineNumStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 )
 
 func (d *DiffView) rebuildAndStay(c *collapsible) {

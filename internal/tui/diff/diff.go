@@ -28,9 +28,9 @@ var (
 				BorderForeground(lipgloss.Color("214")).
 				PaddingLeft(1)
 
-	cursorLineStyle    = lipgloss.NewStyle().Background(lipgloss.Color("238"))                                              // subtle bg for diff content
-	cursorHunkStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("230")).Background(lipgloss.Color("26"))   // bright on brighter blue
-	cursorTrivialStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Background(lipgloss.Color("240"))             // bright on lighter gray
+	cursorLineStyle    = lipgloss.NewStyle().Background(lipgloss.Color("238"))                                             // subtle bg for diff content
+	cursorHunkStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("230")).Background(lipgloss.Color("26")) // bright on brighter blue
+	cursorTrivialStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Background(lipgloss.Color("240"))           // bright on lighter gray
 )
 
 // collapsibleKind identifies what kind of item is at a viewport line.
@@ -575,7 +575,6 @@ func renderComment(c *CommentItem, width int, grouped bool) []string {
 	out = append(out, strings.Split(body, "\n")...)
 	return out
 }
-
 
 func firstLine(s string) string {
 	if i := strings.IndexByte(s, '\n'); i >= 0 {

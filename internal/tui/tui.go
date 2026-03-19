@@ -16,39 +16,43 @@ import (
 	"github.com/sleuth-io/prx/internal/logger"
 	"github.com/sleuth-io/prx/internal/tui/chat"
 	"github.com/sleuth-io/prx/internal/tui/diff"
+	"github.com/sleuth-io/prx/internal/tui/perm"
 	"github.com/sleuth-io/prx/internal/tui/scoring"
 	"github.com/sleuth-io/prx/internal/tui/style"
 )
 
 var (
 	footerStyle = lipgloss.NewStyle().
-			Background(lipgloss.Color("237")).
-			Foreground(lipgloss.Color("250")).
-			Padding(0, 1)
+		Background(lipgloss.Color("237")).
+		Foreground(lipgloss.Color("250")).
+		Padding(0, 1)
 )
 
 const defaultAssessmentLines = 10
 
 type Model struct {
-	app            *app.App
-	cards          []*PRCard
-	total          int
-	fetching       int // PRs whose details are still being fetched
-	scoring        int // PRs whose assessments are still in progress
-	current        int
-	focus          focus
-	diffView       diff.DiffView
-	chatView       chat.View
-	chatActive     bool // true when chat panel is shown instead of diff
+	app             *app.App
+	cards           []*PRCard
+	total           int
+	fetching        int // PRs whose details are still being fetched
+	scoring         int // PRs whose assessments are still in progress
+	current         int
+	focus           focus
+	diffView        diff.DiffView
+	chatView        chat.View
+	chatActive      bool // true when chat panel is shown instead of diff
 	assessmentPanel scoring.Panel
-	spinner        spinner.Model
-	modal          commentModal
-	actionStatus   string // e.g. "Merging…", "Approving…"
-	bodyExpanded   bool
-	program        *tea.Program
-	err            error
-	width          int
-	height         int
+	spinner         spinner.Model
+	modal           commentModal
+	actionStatus    string // e.g. "Merging…", "Approving…"
+	bodyExpanded    bool
+	program         *tea.Program
+	err             error
+	width           int
+	height          int
+	permSocketPath  string
+	permCleanup     func()
+	pendingPerm     *permRequestMsg
 }
 
 func New(a *app.App) Model {
@@ -73,6 +77,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case SetProgramMsg:
 		m.program = msg.Program
+		socketPath, cleanup, err := perm.Listen(msg.Program)
+		if err != nil {
+			logger.Error("perm socket: %v", err)
+		} else {
+			m.permSocketPath = socketPath
+			m.permCleanup = cleanup
+		}
+		return m, nil
+
+	case perm.Msg:
+		m.pendingPerm = &permRequestMsg{description: msg.Description, respond: msg.Respond}
+		return m, nil
+
+	case perm.RefreshMsg:
+		for _, card := range m.cards {
+			if card.PR.Number == msg.PRNumber {
+				return m, refreshPRCmd(card.PR, m.app)
+			}
+		}
 		return m, nil
 
 	case tea.WindowSizeMsg:
@@ -84,6 +107,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		if m.modal.active {
 			return m.handleModalKey(msg)
+		}
+
+		if m.pendingPerm != nil {
+			switch msg.String() {
+			case "y":
+				m.pendingPerm.respond(true)
+				m.pendingPerm = nil
+			case "n", "esc":
+				m.pendingPerm.respond(false)
+				m.pendingPerm = nil
+			}
+			return m, nil
 		}
 
 		switch msg.String() {
@@ -146,6 +181,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+p":
 			m.navigatePR(-1)
 			return m, nil
+		case "ctrl+r":
+			if card := m.currentCard(); card != nil {
+				m.actionStatus = "Refreshing\u2026"
+				return m, tea.Batch(refreshPRCmd(card.PR, m.app), fetchPRListCmd(m.app.Repo))
+			}
+			return m, nil
+		case "ctrl+shift+r":
+			// Hard reset: cancel chats, remove worktrees, clear cache, re-fetch everything.
+			var cmds []tea.Cmd
+			for _, card := range m.cards {
+				if card.chatCancel != nil {
+					card.chatCancel()
+				}
+				if card.worktreePath != "" {
+					cmds = append(cmds, removeWorktreeCmd(m.app.RepoDir, card.worktreePath))
+				}
+			}
+			m.app.Cache.Clear()
+			m.cards = nil
+			m.total = 0
+			m.fetching = 0
+			m.scoring = 0
+			m.current = 0
+			m.actionStatus = ""
+			m.chatActive = false
+			m.focus = focusAssessment
+			m.diffView.Focused = false
+			cmds = append(cmds, m.spinner.Tick, fetchPRListCmd(m.app.Repo))
+			return m, tea.Batch(cmds...)
 		}
 
 		if m.focus == focusChat {
@@ -260,13 +324,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = msg.err
 			return m, nil
 		}
-		m.total = len(msg.rawPRs)
-		m.fetching = len(msg.rawPRs)
-		if m.total == 0 {
+		// Skip PRs already loaded (handles both initial load and soft refresh).
+		existing := make(map[int]bool, len(m.cards))
+		for _, card := range m.cards {
+			existing[card.PR.Number] = true
+		}
+		var newRaws []map[string]any
+		for _, raw := range msg.rawPRs {
+			if num := int(raw["number"].(float64)); !existing[num] {
+				newRaws = append(newRaws, raw)
+			}
+		}
+		if len(m.cards) == 0 {
+			// Initial load: set totals from the full list.
+			m.total = len(msg.rawPRs)
+			m.fetching = len(newRaws)
+		} else {
+			// Soft refresh: accumulate only new fetches.
+			m.fetching += len(newRaws)
+		}
+		if len(newRaws) == 0 {
 			return m, nil
 		}
-		cmds := make([]tea.Cmd, len(msg.rawPRs))
-		for i, raw := range msg.rawPRs {
+		cmds := make([]tea.Cmd, len(newRaws))
+		for i, raw := range newRaws {
 			cmds[i] = fetchPRDetailsCmd(raw, m.app)
 		}
 		return m, tea.Batch(cmds...)
@@ -355,6 +436,68 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case prRefreshedMsg:
+		m.actionStatus = ""
+		if msg.err != nil {
+			logger.Error("refresh PR: %v", msg.err)
+			return m, nil
+		}
+		var rescoreCmd tea.Cmd
+		shaChanged := msg.newDiff != ""
+		for _, card := range m.cards {
+			if card.PR.Number == msg.prNumber {
+				// Always apply metadata changes.
+				if msg.activity.Title != "" {
+					card.PR.Title = msg.activity.Title
+				}
+				if msg.activity.Body != "" {
+					card.PR.Body = msg.activity.Body
+				}
+				if msg.activity.HeadSHA != "" {
+					card.PR.HeadSHA = msg.activity.HeadSHA
+					card.PR.HeadRefName = msg.activity.HeadRefName
+				}
+				oldReviewsText := reviewsText(card.PR)
+				card.PR.Checks = msg.activity.Checks
+				card.PR.Reviews = msg.activity.Reviews
+				card.PR.InlineComments = msg.activity.InlineComments
+				card.PR.Comments = msg.activity.Comments
+				reviewsChanged := reviewsText(card.PR) != oldReviewsText
+				if shaChanged {
+					// New commits: replace diff, re-parse, force re-score.
+					card.PR.Diff = msg.newDiff
+					card.parsedFiles = nil
+					card.annotationsApplied = false
+					card.Scoring = true
+					m.scoring++
+					rescoreCmd = forceScorePRCmd(card.PR, m.app)
+				} else {
+					// Re-apply inline comment annotations to the existing parsed diff.
+					card.annotationsApplied = false
+					if card.parsedFiles != nil {
+						applyHunkAnnotations(card)
+					}
+					// Re-score only if reviews/comments actually changed.
+					if reviewsChanged {
+						card.Scoring = true
+						m.scoring++
+						rescoreCmd = scorePRCmd(card.PR, m.app)
+					}
+				}
+				break
+			}
+		}
+		if card := m.currentCard(); card != nil && card.PR.Number == msg.prNumber {
+			m.rebuildAssessment()
+			if shaChanged {
+				return m, tea.Batch(parseDiffCmd(card.PR), rescoreCmd)
+			}
+			if card.parsedFiles != nil {
+				m.diffView.SetParsedContent(card.parsedFiles, card.PR)
+			}
+		}
+		return m, rescoreCmd
+
 	case commentSubmittedMsg:
 		for _, card := range m.cards {
 			if card.PR.Number == msg.prNumber {
@@ -400,7 +543,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.chatActive && m.chatView.Streaming {
 				ctx, cancel := context.WithCancel(context.Background())
 				card.chatCancel = cancel
-				return m, sendChatCmd(ctx, msg.path, card.PR, card.Assessment, card.chatMessages, card.chatContext, m.app.Config.Review.Model, m.program)
+				return m, sendChatCmd(ctx, msg.path, card.PR, card.Assessment, card.chatMessages, card.chatContext, m.app.Config.Review.Model, m.app.Repo, m.isOwnPR(card), m.permSocketPath, m.program)
 			}
 		}
 		return m, nil
@@ -719,12 +862,16 @@ func (m *Model) sendChatMessage() tea.Cmd {
 	if card.worktreePath != "" {
 		ctx, cancel := context.WithCancel(context.Background())
 		card.chatCancel = cancel
-		return sendChatCmd(ctx, card.worktreePath, card.PR, card.Assessment, card.chatMessages, card.chatContext, m.app.Config.Review.Model, m.program)
+		return sendChatCmd(ctx, card.worktreePath, card.PR, card.Assessment, card.chatMessages, card.chatContext, m.app.Config.Review.Model, m.app.Repo, m.isOwnPR(card), m.permSocketPath, m.program)
 	}
 	return nil
 }
 
 func (m *Model) cleanupWorktrees() tea.Cmd {
+	if m.permCleanup != nil {
+		m.permCleanup()
+		m.permCleanup = nil
+	}
 	var cmds []tea.Cmd
 	for _, card := range m.cards {
 		if card.worktreePath != "" {
@@ -799,12 +946,12 @@ func (m Model) View() string {
 		} else {
 			content = m.diffView.ViewContent()
 		}
-		return lipgloss.JoinVertical(lipgloss.Left,
-			assessmentPanel,
-			tabBar,
-			content,
-			m.renderFooter(),
-		)
+		parts := []string{assessmentPanel, tabBar, content}
+		if m.pendingPerm != nil {
+			parts = append(parts, m.renderPermBanner(width))
+		}
+		parts = append(parts, m.renderFooter())
+		return lipgloss.JoinVertical(lipgloss.Left, parts...)
 	}
 
 	return lipgloss.JoinVertical(lipgloss.Left,
@@ -873,6 +1020,21 @@ func (m Model) renderTabBar(width int, diffActive, chatActive bool) string {
 	return tabs
 }
 
+var permBannerStyle = lipgloss.NewStyle().
+	Border(lipgloss.RoundedBorder()).
+	BorderForeground(lipgloss.Color("214")).
+	Foreground(lipgloss.Color("230")).
+	Padding(0, 1)
+
+func (m Model) renderPermBanner(width int) string {
+	inner := fmt.Sprintf("Claude wants to: %s\n[y] allow   [n] deny", m.pendingPerm.description)
+	maxW := width - 4
+	if maxW < 20 {
+		maxW = 20
+	}
+	return permBannerStyle.Width(maxW).Render(inner)
+}
+
 func (m Model) renderFooter() string {
 	width := m.width
 	if width == 0 {
@@ -886,11 +1048,11 @@ func (m Model) renderFooter() string {
 	}
 	var hints string
 	if m.chatActive && m.focus == focusChat {
-		hints = "esc stop/close  |  tab  |  ctrl+n/p nav  |  ctrl+c quit"
+		hints = "esc stop/close  |  tab  |  ctrl+n/p nav  |  ctrl+r refresh  |  ctrl+c quit"
 	} else if m.chatActive {
-		hints = "? chat  |  tab  |  j/k scroll  |  ctrl+n/p nav  |  q quit"
+		hints = "? chat  |  tab  |  j/k scroll  |  ctrl+n/p nav  |  ctrl+r refresh  |  q quit"
 	} else {
-		hints = "? chat  |  q quit  |  tab  |  j/k scroll  |  p/n nav  |  ctrl+n/p nav anywhere"
+		hints = "? chat  |  q quit  |  tab  |  j/k scroll  |  p/n nav  |  ctrl+n/p nav  |  ctrl+r refresh"
 	}
 	gap := width - lipgloss.Width(status) - lipgloss.Width(hints) - 2
 	if gap < 1 {

@@ -51,6 +51,15 @@ func (c *Cache) Get(key string) (ai.Assessment, bool) {
 	return e.Assessment, ok
 }
 
+// Clear removes all cached entries and deletes the cache file.
+func (c *Cache) Clear() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.entries = make(map[string]Entry)
+	_ = os.Remove(c.path)
+	logger.Info("cache cleared")
+}
+
 func (c *Cache) Set(key string, a ai.Assessment) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
