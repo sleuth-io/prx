@@ -8,82 +8,50 @@ Set Padding 20
 
 Sleep 500ms
 
-# Launch prx
-Type "prx"
+# Launch prx against pulse repo
+Type "prx ../pulse"
 Sleep 300ms
 Enter
 
-# Wait for PRs to load and first assessment to appear
-Sleep 8s
+# Wait for PRs to load
+Sleep 4s
 
-# Show the assessment panel
-Sleep 3s
+# Skip to third PR
+Ctrl+N
+Sleep 1s
+Ctrl+N
+Sleep 1s
 
 # Tab to diff view
 Tab
 Sleep 1s
 
-# Scroll down through the diff
+# Scroll down a few lines
 Down
-Sleep 300ms
+Sleep 400ms
 Down
-Sleep 300ms
+Sleep 400ms
 Down
-Sleep 300ms
-Down
-Sleep 300ms
-Down
-Sleep 300ms
-Down
-Sleep 300ms
-Down
-Sleep 300ms
-Down
-Sleep 300ms
+Sleep 400ms
 
-# Jump to next file
-Type "]"
+# Jump to a hunk
+Type "}"
+Sleep 1s
+
+# Collapse it
+Left
 Sleep 1s
 
 # Jump to next hunk
 Type "}"
 Sleep 1s
-Type "}"
-Sleep 1s
 
-# Collapse a hunk
-Left
-Sleep 1s
+# Open chat and ask about blast radius
+Type "?"
+Sleep 5s
+Type "Briefly explain the blast radius of this change"
+Sleep 300ms
+Enter
 
-# Expand it back
-Right
-Sleep 1s
-
-# Navigate to next PR
-Ctrl+N
-Sleep 2s
-
-# Show assessment for second PR
-Sleep 2s
-
-# Tab to diff
-Tab
-Sleep 1s
-
-# Scroll through
-Down
-Sleep 200ms
-Down
-Sleep 200ms
-Down
-Sleep 200ms
-Down
-Sleep 200ms
-Down
-Sleep 200ms
-
-Sleep 2s
-
-# Quit
-Type "q"
-Sleep 1s
+# Wait for Claude response
+Sleep 30s

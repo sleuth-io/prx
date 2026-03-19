@@ -2,8 +2,7 @@
 
 # prx
 
-### AI-powered PR triage for humans who review code.
-### See what needs your brain. Skip what doesn't.
+### AI-powered PR triage for people who review code.
 
 <br>
 
@@ -16,12 +15,12 @@
 
 ## What is prx?
 
-prx is a terminal UI that helps you prioritize code review. It uses AI to score each PR on how much *human judgment* it requires — not to review the code for you, but to tell you where your time matters most.
+prx is a terminal UI that helps you prioritize code review. It uses AI to score each PR on how much *human judgment* it requires - not to review the code for you, but to tell you where your time matters most.
 
 **For each PR, prx shows:**
 - Risk scores across configurable criteria (blast radius, intent clarity, irreversibility, domain knowledge, novelty)
 - A weighted verdict: APPROVE, REVIEW, or INVESTIGATE
-- Per-hunk annotations — trivial hunks auto-collapse so you see only what needs your brain
+- Per-hunk annotations - trivial hunks auto-collapse so you see only what needs your brain
 - Inline comments, review history, and CI status
 
 **From the TUI you can:**
@@ -30,11 +29,20 @@ prx is a terminal UI that helps you prioritize code review. It uses AI to score 
 - Chat with Claude about the code in context
 - Navigate between PRs, files, and hunks with keyboard shortcuts
 
+**Coming next: Personalized automated actions**
+- Auto-approve trivial PRs
+- Set up your own scoring criteria and automate from that 
+- Customize auto-merge rules
+
 ## Install
 
-**From GitHub releases (macOS/Linux/Windows):**
+**Quick install (macOS/Linux):**
 
-Download the latest binary from [Releases](https://github.com/sleuth-io/prx/releases).
+```bash
+curl -fsSL https://raw.githubusercontent.com/sleuth-io/prx/main/install.sh | bash
+```
+
+Or download the latest binary manually from [Releases](https://github.com/sleuth-io/prx/releases).
 
 **From source:**
 
@@ -61,36 +69,21 @@ prx /path/to/repo
 
 ### Keyboard shortcuts
 
-| Key | Action |
-|-----|--------|
-| `tab` | Cycle between panels |
-| `j/k` | Scroll up/down |
-| `n/p` | Next/previous PR |
-| `]/[` | Next/previous file |
-| `}/{` | Next/previous hunk |
-| `←/→` | Collapse/expand |
-| `a` | Approve PR |
-| `m` | Merge PR (own PRs) |
-| `r` | Request changes |
-| `c` | Comment (global or inline) |
-| `?` | Open AI chat |
-| `q` | Quit |
+| Key             | Action |
+|-----------------|--------|
+| `tab`           | Cycle between panels |
+| `j/k/up/down`   | Scroll up/down |
+| `n/p`           | Next/previous PR |
+| `]/[`           | Next/previous file |
+| `}/{`           | Next/previous hunk |
+| `left/right` | Collapse/expand |
+| `a`             | Approve PR |
+| `m`             | Merge PR (own PRs) |
+| `r`             | Request changes |
+| `c`             | Comment (global or inline) |
+| `?`             | Open AI chat |
+| `q`             | Quit |
 
-## Configuration
-
-Config file: `~/.config/prx/config.toml`
-
-```toml
-# Customize scoring criteria weights
-[[criteria]]
-name = "blast_radius"
-weight = 2.0  # double the weight of blast radius
-
-# Approval/review thresholds
-[thresholds]
-approve_below = 2.0
-review_above = 3.5
-```
 
 ## License
 
