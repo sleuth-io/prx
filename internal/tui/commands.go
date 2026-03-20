@@ -196,12 +196,7 @@ func sendChatCmd(ctx context.Context, worktreePath string, pr *github.PR, assess
 			history[i] = ai.ChatMessage{Role: m.Role, Content: m.Content}
 		}
 
-		var actionTools []string
-		if isOwnPR {
-			actionTools = []string{"mcp__prx__comment_on_pr", "mcp__prx__merge_pr"}
-		} else {
-			actionTools = []string{"mcp__prx__comment_on_pr", "mcp__prx__approve_pr", "mcp__prx__request_changes"}
-		}
+		actionTools := ActionToolNames(isOwnPR)
 
 		// Write a temp MCP config so Claude can call our mcp-server subprocess.
 		var mcpConfigFile string

@@ -5,7 +5,6 @@ import (
 	"math"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/sleuth-io/prx/internal/ai"
 	"github.com/sleuth-io/prx/internal/config"
@@ -21,7 +20,7 @@ var (
 	boldStyle    = lipgloss.NewStyle().Bold(true)
 	mergedBanner = lipgloss.NewStyle().Bold(true).
 			Foreground(lipgloss.Color("230")).
-			Background(lipgloss.Color("57")). // purple, like GitHub's merged colour
+			Background(lipgloss.Color("57")).
 			Padding(0, 1)
 	closedBanner = lipgloss.NewStyle().Bold(true).
 			Foreground(lipgloss.Color("230")).
@@ -29,7 +28,7 @@ var (
 			Padding(0, 1)
 )
 
-// RenderData contains everything needed to render the assessment panel.
+// RenderData contains everything needed to render the assessment.
 type RenderData struct {
 	PR               *github.PR
 	Assessment       *ai.Assessment
@@ -43,55 +42,6 @@ type RenderData struct {
 	ScoringToolCount int
 	ScoringLastTool  string
 	ScoringStatus    string
-}
-
-// Panel is the assessment/scoring panel component.
-type Panel struct {
-	viewport      viewport.Model
-	contentHeight int
-}
-
-func New(width, height int) Panel {
-	return Panel{
-		viewport: viewport.New(width, height-1), // -1 for the panel title bar
-	}
-}
-
-func (p *Panel) SetSize(width, height int) {
-	p.viewport.Width = width - 1 // reserve 1 char for scrollbar
-	p.viewport.Height = height - 1
-}
-
-func (p *Panel) ScrollUp(n int)   { p.viewport.ScrollUp(n) }
-func (p *Panel) ScrollDown(n int) { p.viewport.ScrollDown(n) }
-func (p *Panel) AtBottom() bool   { return p.viewport.AtBottom() }
-func (p *Panel) GotoTop()         { p.viewport.GotoTop() }
-
-// RenderInline renders the assessment as a string for embedding in a scrollback.
-func RenderInline(data RenderData, width int) string {
-	return buildContent(data, width)
-}
-
-// SetContent rebuilds the assessment panel content from data.
-func (p *Panel) SetContent(data RenderData) {
-	content := buildContent(data, p.viewport.Width)
-	p.viewport.SetContent(content)
-	p.contentHeight = strings.Count(content, "\n") + 1
-}
-
-// ContentHeight returns the number of lines in the current content.
-func (p Panel) ContentHeight() int {
-	return p.contentHeight
-}
-
-// ViewContent renders just the viewport content (no title bar).
-func (p Panel) ViewContent() string {
-	return p.viewport.View()
-}
-
-// Viewport returns the underlying viewport for scrollbar rendering.
-func (p Panel) Viewport() viewport.Model {
-	return p.viewport
 }
 
 // WeightedScore calculates the weighted score from an assessment.
@@ -120,6 +70,47 @@ func ComputeVerdict(score float64, thresholds config.ThresholdsConfig) string {
 	return "review"
 }
 
+// RenderInline renders the assessment as a string for embedding in a scrollback.
+func RenderInline(data RenderData, width int) string {
+	return buildContent(data, width)
+}
+
+// ScoreBar renders a 5-block bar colored by risk level.
+func ScoreBar(score float64) string {
+	filled := int(math.Round(score))
+	if filled > 5 {
+		filled = 5
+	}
+	if filled < 0 {
+		filled = 0
+	}
+	bar := strings.Repeat("\u2588", filled) + strings.Repeat("\u2591", 5-filled)
+	var s lipgloss.Style
+	switch {
+	case score <= 2.0:
+		s = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
+	case score <= 3.5:
+		s = lipgloss.NewStyle().Foreground(lipgloss.Color("220"))
+	default:
+		s = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+	}
+	return s.Render(bar)
+}
+
+// RenderVerdict renders a colored verdict label.
+func RenderVerdict(verdict string) string {
+	switch verdict {
+	case "approve":
+		return verdictApprove.Render("APPROVE")
+	case "review":
+		return verdictReview.Render("REVIEW")
+	case "reject":
+		return verdictReject.Render("HIGH RISK")
+	default:
+		return verdict
+	}
+}
+
 func buildContent(data RenderData, vpWidth int) string {
 	w := vpWidth
 	if w == 0 {
@@ -138,8 +129,6 @@ func buildContent(data RenderData, vpWidth int) string {
 	reviews := "  " + renderReviewStatus(pr)
 	checks := "  " + renderChecksStatus(pr)
 
-	// PR description (collapsible, full-width below columns)
-	// Normalize Windows line endings so \r doesn't overwrite rendered text.
 	prBody := strings.ReplaceAll(pr.Body, "\r\n", "\n")
 	var bodyLine string
 	if data.BodyExpanded {
@@ -167,17 +156,14 @@ func buildContent(data RenderData, vpWidth int) string {
 	leftLines := []string{meta, riskLine}
 	rightLines := []string{reviews, checks}
 
-	// Factor detail lines (below the two-column header)
 	var factorDetails []string
 	if data.Assessment != nil {
-		// Find max label width for alignment
 		maxLabelW := 0
 		for _, c := range data.Criteria {
 			if len(c.Label) > maxLabelW {
 				maxLabelW = len(c.Label)
 			}
 		}
-		// prefix width: 2 indent + label + 1 space + 5 bar + 1 space + 1 digit + 2 spaces = maxLabelW + 12
 		prefixW := maxLabelW + 12
 		reasonW := w - prefixW
 		if reasonW < 20 {
@@ -189,7 +175,6 @@ func buildContent(data RenderData, vpWidth int) string {
 				padded := fmt.Sprintf("%-*s", maxLabelW, c.Label)
 				prefix := fmt.Sprintf("%s %s %d  ", boldStyle.Render("  "+padded), ScoreBar(float64(f.Score)), f.Score)
 				reason := style.DimStyle.Width(reasonW).Render(f.Reason)
-				// Join prefix with first line, indent continuation lines
 				reasonLines := strings.Split(reason, "\n")
 				factorDetails = append(factorDetails, prefix+reasonLines[0])
 				indent := strings.Repeat(" ", prefixW)
@@ -221,7 +206,6 @@ func buildContent(data RenderData, vpWidth int) string {
 		cols = lipgloss.JoinVertical(lipgloss.Left, title, twoCol)
 	}
 
-	// PR description (collapsible, full-width below columns)
 	if bodyLine != "" {
 		cols = lipgloss.JoinVertical(lipgloss.Left, cols, bodyLine)
 	}
@@ -239,10 +223,8 @@ func buildContent(data RenderData, vpWidth int) string {
 	wrapStyle := lipgloss.NewStyle().Width(wrapW)
 	var below []string
 
-	// Factor details first
 	below = append(below, factorDetails...)
 
-	// Then review notes
 	hasNotes := false
 	if a.RiskSummary != "" || a.ReviewNotes != "" {
 		below = append(below, style.DimStyle.Render("  ── Review Notes ──"))
@@ -329,40 +311,4 @@ func renderChecksStatus(pr *github.PR) string {
 		return verdictApprove.Render("Checks: " + summary)
 	}
 	return style.DimStyle.Render("Checks: " + summary)
-}
-
-// ScoreBar renders a 5-block bar colored by risk level.
-func ScoreBar(score float64) string {
-	filled := int(math.Round(score))
-	if filled > 5 {
-		filled = 5
-	}
-	if filled < 0 {
-		filled = 0
-	}
-	bar := strings.Repeat("\u2588", filled) + strings.Repeat("\u2591", 5-filled)
-	var s lipgloss.Style
-	switch {
-	case score <= 2.0:
-		s = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
-	case score <= 3.5:
-		s = lipgloss.NewStyle().Foreground(lipgloss.Color("220"))
-	default:
-		s = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
-	}
-	return s.Render(bar)
-}
-
-// RenderVerdict renders a colored verdict label.
-func RenderVerdict(verdict string) string {
-	switch verdict {
-	case "approve":
-		return verdictApprove.Render("APPROVE")
-	case "review":
-		return verdictReview.Render("REVIEW")
-	case "reject":
-		return verdictReject.Render("HIGH RISK")
-	default:
-		return verdict
-	}
 }

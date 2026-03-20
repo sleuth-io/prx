@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -22,7 +21,7 @@ type Command struct {
 	Description string       // shown in help/autocomplete
 	KeyBinding  string       // optional ctrl combo (e.g. "ctrl+d"), empty = no binding
 	Scope       CommandScope // controls autocomplete visibility
-	Run         func(m *Model) (Model, tea.Cmd)
+	Run         func(s *ConversationScene, m *Model) (Scene, tea.Cmd, bool)
 }
 
 // commands returns all registered commands.
@@ -33,9 +32,9 @@ func commands() []Command {
 			Description: "Go to next PR",
 			KeyBinding:  "ctrl+n",
 			Scope:       ScopeGlobal,
-			Run: func(m *Model) (Model, tea.Cmd) {
-				m.navigatePR(1)
-				return *m, nil
+			Run: func(s *ConversationScene, m *Model) (Scene, tea.Cmd, bool) {
+				m.navigatePR(1, s)
+				return s, nil, true
 			},
 		},
 		{
@@ -43,9 +42,9 @@ func commands() []Command {
 			Description: "Go to previous PR",
 			KeyBinding:  "ctrl+p",
 			Scope:       ScopeGlobal,
-			Run: func(m *Model) (Model, tea.Cmd) {
-				m.navigatePR(-1)
-				return *m, nil
+			Run: func(s *ConversationScene, m *Model) (Scene, tea.Cmd, bool) {
+				m.navigatePR(-1, s)
+				return s, nil, true
 			},
 		},
 		{
@@ -53,52 +52,44 @@ func commands() []Command {
 			Description: "Toggle diff overlay",
 			KeyBinding:  "ctrl+d",
 			Scope:       ScopePR,
-			Run: func(m *Model) (Model, tea.Cmd) {
-				if m.overlay == overlayDiff {
-					m.overlay = overlayNone
-					m.diffView.Focused = false
-					m.resizeLayout()
-					m.buildScrollback()
-					return *m, m.input.Focus()
-				}
-				m.overlay = overlayDiff
+			Run: func(s *ConversationScene, m *Model) (Scene, tea.Cmd, bool) {
+				s.input.Blur()
 				m.diffView.Focused = true
-				m.input.Blur()
-				m.resizeLayout()
-				return *m, nil
+				ds := newDiffOverlayScene(s, m.width, m.height)
+				return ds, nil, true
 			},
 		},
 		{
 			Name:        "approve",
 			Description: "Approve current PR",
 			Scope:       ScopePR,
-			Run: func(m *Model) (Model, tea.Cmd) {
+			Run: func(s *ConversationScene, m *Model) (Scene, tea.Cmd, bool) {
 				card := m.currentCard()
 				if card == nil || card.Scoring || m.isOwnPR(card) {
-					return *m, nil
+					return s, nil, true
 				}
 				repo, num := m.app.Repo, card.PR.Number
-				m.confirm = &confirmDialog{
+				s.confirm = &confirmDialog{
 					description:  fmt.Sprintf("Approve PR #%d?", num),
 					actionStatus: "Approving…",
 					cmd:          approveCmd(repo, num),
 				}
-				return *m, nil
+				return s, nil, true
 			},
 		},
 		{
 			Name:        "merge",
 			Description: "Merge current PR",
 			Scope:       ScopePR,
-			Run: func(m *Model) (Model, tea.Cmd) {
+			Run: func(s *ConversationScene, m *Model) (Scene, tea.Cmd, bool) {
 				card := m.currentCard()
 				if card == nil || card.Scoring || !m.isOwnPR(card) {
-					return *m, nil
+					return s, nil, true
 				}
 				if reason := card.PR.MergeBlockReason(); reason != "" {
-					m.actionStatus = fmt.Sprintf("Cannot merge: %s", reason)
-					m.actionDone = true
-					return *m, nil
+					s.actionStatus = fmt.Sprintf("Cannot merge: %s", reason)
+					s.actionDone = true
+					return s, nil, true
 				}
 				repo, num := m.app.Repo, card.PR.Number
 				method := m.app.Config.Review.MergeMethod
@@ -106,52 +97,56 @@ func commands() []Command {
 				if warn := card.PR.MergeWarnReason(); warn != "" {
 					desc += fmt.Sprintf(" [warning: %s]", warn)
 				}
-				m.confirm = &confirmDialog{
+				s.confirm = &confirmDialog{
 					description:  desc,
 					actionStatus: "Merging…",
 					cmd:          mergeCmd(repo, num, method),
 				}
-				return *m, nil
+				return s, nil, true
 			},
 		},
 		{
 			Name:        "reject",
 			Description: "Request changes on current PR",
 			Scope:       ScopePR,
-			Run: func(m *Model) (Model, tea.Cmd) {
+			Run: func(s *ConversationScene, m *Model) (Scene, tea.Cmd, bool) {
 				card := m.currentCard()
 				if card == nil || card.Scoring || card.Assessment == nil || m.isOwnPR(card) {
-					return *m, nil
+					return s, nil, true
 				}
 				repo, num, notes := m.app.Repo, card.PR.Number, card.Assessment.ReviewNotes
-				m.confirm = &confirmDialog{
+				s.confirm = &confirmDialog{
 					description:  fmt.Sprintf("Request changes on PR #%d?", num),
 					actionStatus: "Requesting changes…",
 					cmd:          requestChangesCmd(repo, num, notes),
 				}
-				return *m, nil
+				return s, nil, true
 			},
 		},
 		{
 			Name:        "comment",
 			Description: "Post a comment on current PR",
 			Scope:       ScopePR,
-			Run: func(m *Model) (Model, tea.Cmd) {
+			Run: func(s *ConversationScene, m *Model) (Scene, tea.Cmd, bool) {
 				card := m.currentCard()
 				if card == nil {
-					return *m, nil
+					return s, nil, true
 				}
-				m.openCommentModal(card, false, "", 0)
-				return *m, m.modal.textarea.Focus()
+				// Enter diff overlay with comment modal open
+				s.input.Blur()
+				m.diffView.Focused = true
+				ds := newDiffOverlayScene(s, m.width, m.height)
+				ds.openCommentModal(card, false, "", 0)
+				return ds, ds.modal.textarea.Focus(), true
 			},
 		},
 		{
 			Name:        "bulk",
 			Description: "Open bulk approve view",
 			Scope:       ScopeGlobal,
-			Run: func(m *Model) (Model, tea.Cmd) {
+			Run: func(s *ConversationScene, m *Model) (Scene, tea.Cmd, bool) {
 				m.tryEnterBulkApprove()
-				return *m, nil
+				return s, nil, true
 			},
 		},
 		{
@@ -159,14 +154,14 @@ func commands() []Command {
 			Description: "Refresh current PR and check for new PRs",
 			KeyBinding:  "ctrl+r",
 			Scope:       ScopeGlobal,
-			Run: func(m *Model) (Model, tea.Cmd) {
+			Run: func(s *ConversationScene, m *Model) (Scene, tea.Cmd, bool) {
 				card := m.currentCard()
 				if card == nil {
-					return *m, nil
+					return s, nil, true
 				}
-				m.actionStatus = "Refreshing…"
-				m.actionDone = false
-				return *m, tea.Batch(refreshPRCmd(card.PR, m.app), fetchPRListCmd(m.app.Repo))
+				s.actionStatus = "Refreshing…"
+				s.actionDone = false
+				return s, tea.Batch(refreshPRCmd(card.PR, m.app), fetchPRListCmd(m.app.Repo)), true
 			},
 		},
 		{
@@ -174,23 +169,22 @@ func commands() []Command {
 			Description: "Quit prx",
 			KeyBinding:  "ctrl+q",
 			Scope:       ScopeGlobal,
-			Run: func(m *Model) (Model, tea.Cmd) {
-				return *m, m.cleanupWorktrees()
+			Run: func(s *ConversationScene, m *Model) (Scene, tea.Cmd, bool) {
+				return s, m.cleanupWorktrees(), true
 			},
 		},
 		{
 			Name:        "exit",
 			Description: "Quit prx",
 			Scope:       ScopeGlobal,
-			Run: func(m *Model) (Model, tea.Cmd) {
-				return *m, m.cleanupWorktrees()
+			Run: func(s *ConversationScene, m *Model) (Scene, tea.Cmd, bool) {
+				return s, m.cleanupWorktrees(), true
 			},
 		},
 	}
 }
 
 // commandMap builds lookup tables from the command registry.
-// Called once; results can be cached on Model if needed.
 func commandMap() (slashMap map[string]*Command, keyMap map[string]*Command) {
 	cmds := commands()
 	slashMap = make(map[string]*Command, len(cmds))
@@ -205,28 +199,11 @@ func commandMap() (slashMap map[string]*Command, keyMap map[string]*Command) {
 	return
 }
 
-// handleSlashCommand checks if the input is a slash command and executes it.
-func (m *Model) handleSlashCommand() (Model, tea.Cmd, bool) {
-	input := strings.TrimSpace(m.input.Value())
-	if !strings.HasPrefix(input, "/") {
-		return *m, nil, false
+// ActionToolNames returns the MCP-prefixed action tool names filtered by ownership.
+// This replaces the hardcoded tool lists in sendChatCmd.
+func ActionToolNames(isOwnPR bool) []string {
+	if isOwnPR {
+		return []string{"mcp__prx__comment_on_pr", "mcp__prx__merge_pr"}
 	}
-	name := strings.ToLower(strings.TrimPrefix(input, "/"))
-	slashCmds, _ := commandMap()
-	if cmd, ok := slashCmds[name]; ok {
-		m.input.Reset()
-		model, teaCmd := cmd.Run(m)
-		return model, teaCmd, true
-	}
-	return *m, nil, false
-}
-
-// handleCommandKey checks if a key matches a command's KeyBinding.
-func (m *Model) handleCommandKey(key string) (Model, tea.Cmd, bool) {
-	_, keyCmds := commandMap()
-	if cmd, ok := keyCmds[key]; ok {
-		model, teaCmd := cmd.Run(m)
-		return model, teaCmd, true
-	}
-	return *m, nil, false
+	return []string{"mcp__prx__comment_on_pr", "mcp__prx__approve_pr", "mcp__prx__request_changes"}
 }

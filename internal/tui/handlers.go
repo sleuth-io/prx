@@ -11,8 +11,7 @@ import (
 	"github.com/sleuth-io/prx/internal/config"
 	"github.com/sleuth-io/prx/internal/github"
 	"github.com/sleuth-io/prx/internal/logger"
-	"github.com/sleuth-io/prx/internal/tui/bulkapprove"
-	"github.com/sleuth-io/prx/internal/tui/chat"
+	"github.com/sleuth-io/prx/internal/tui/conversation"
 	"github.com/sleuth-io/prx/internal/tui/perm"
 	"github.com/sleuth-io/prx/internal/tui/scoring"
 )
@@ -22,9 +21,8 @@ import (
 // ---------------------------------------------------------------------------
 
 func (m *Model) updateReview(msg tea.Msg) (Model, tea.Cmd) {
+	// PR lifecycle and chat messages handled at Model level (mutate shared state)
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		return m.handleKey(msg)
 	case prListFetchedMsg:
 		return m.handlePRList(msg)
 	case prDetailsFetchedMsg:
@@ -37,8 +35,6 @@ func (m *Model) updateReview(msg tea.Msg) (Model, tea.Cmd) {
 		return m.handleScoringStatus(msg)
 	case prScoredMsg:
 		return m.handlePRScored(msg)
-	case actionDoneMsg:
-		return m.handleActionDone(msg)
 	case prRefreshedMsg:
 		return m.handlePRRefreshed(msg)
 	case commentSubmittedMsg:
@@ -54,30 +50,11 @@ func (m *Model) updateReview(msg tea.Msg) (Model, tea.Cmd) {
 	case chatDoneMsg:
 		return m.handleChatDone(msg)
 	}
-	return *m, nil
-}
 
-func (m *Model) updateBulkApprove(msg tea.Msg) (Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case bulkapprove.ExitMsg:
-		m.exitBulkApprove()
-		return *m, m.input.Focus()
-	case bulkapprove.ViewPRMsg:
-		for i, c := range m.cards {
-			if c.PR.Number == msg.PRNumber {
-				m.current = i
-				break
-			}
-		}
-		m.exitBulkApprove()
-		return *m, m.input.Focus()
-	case bulkapprove.QuitMsg:
-		return *m, m.cleanupWorktrees()
-	default:
-		var cmd tea.Cmd
-		m.bulkApprove, cmd = m.bulkApprove.Update(msg)
-		return *m, cmd
-	}
+	// Everything else delegated to the active scene
+	var cmd tea.Cmd
+	m.scene, cmd = m.scene.Update(msg, m)
+	return *m, cmd
 }
 
 // ---------------------------------------------------------------------------
@@ -101,9 +78,6 @@ func (m *Model) handleWindowSize(msg tea.WindowSizeMsg) (Model, tea.Cmd) {
 	m.height = msg.Height
 	m.resizeLayout()
 	m.buildScrollback()
-	if m.inBulkApprove() {
-		m.bulkApprove.SetSize(msg.Width, msg.Height)
-	}
 	return *m, nil
 }
 
@@ -112,12 +86,14 @@ func (m *Model) handleSpinnerTick(msg spinner.TickMsg) (Model, tea.Cmd) {
 	m.spinner, cmd = m.spinner.Update(msg)
 	// Rebuild scrollback if anything is actively streaming or scoring
 	if card := m.currentCard(); card != nil {
-		if card.Streaming || card.ChatStatus != "" || card.Scoring {
+		chatActive := card.Chat != nil && (card.Chat.Streaming || card.Chat.Status != "")
+		if chatActive || card.Scoring {
 			m.buildScrollback()
 		}
 	}
-	if m.inBulkApprove() {
-		m.bulkApprove.SetSpinnerView(m.spinner.View())
+	// Pass spinner to bulk approve scene if active
+	if ba, ok := m.scene.(*BulkApproveScene); ok {
+		ba.model.SetSpinnerView(m.spinner.View())
 	}
 	return *m, cmd
 }
@@ -177,6 +153,7 @@ func (m *Model) handlePRList(msg prListFetchedMsg) (Model, tea.Cmd) {
 		m.logDone()
 		if len(msg.rawPRs) == 0 {
 			m.startupLog = append(m.startupLog, startupEntry{text: "No open PRs found", done: true})
+			m.noPRs = true
 		}
 		return *m, nil
 	}
@@ -206,7 +183,7 @@ func (m *Model) handlePRDetails(msg prDetailsFetchedMsg) (Model, tea.Cmd) {
 		}
 		m.logStep(fmt.Sprintf("Loaded PR #%d: %s%s (%d/%d)", pr.Number, truncate(pr.Title, 40), cached, fetched, m.total))
 	}
-	card := &PRCard{PR: pr, Scoring: true}
+	card := &PRCard{PR: pr, Scoring: true, Chat: &conversation.ChatSession{}}
 	// Insert sorted by PR number descending (newest first).
 	idx := 0
 	for idx < len(m.cards) && m.cards[idx].PR.Number > pr.Number {
@@ -315,33 +292,9 @@ func (m *Model) handlePRScored(msg prScoredMsg) (Model, tea.Cmd) {
 	return *m, nil
 }
 
-func (m *Model) handleActionDone(msg actionDoneMsg) (Model, tea.Cmd) {
-	m.actionDone = true
-	if msg.err != nil {
-		m.actionStatus = fmt.Sprintf("%s failed: %s", msg.action, msg.err)
-		m.buildScrollback()
-		return *m, nil
-	}
-	switch msg.action {
-	case actionMerge:
-		m.actionStatus = fmt.Sprintf("Merged PR #%d", msg.pr)
-		if card := m.currentCard(); card != nil && card.PR.Number == msg.pr {
-			card.PR.State = "MERGED"
-		}
-	case actionApprove:
-		m.actionStatus = fmt.Sprintf("Approved PR #%d", msg.pr)
-	case actionRequestChanges:
-		m.actionStatus = fmt.Sprintf("Requested changes on PR #%d", msg.pr)
-	default:
-		m.actionStatus = fmt.Sprintf("%s done", msg.action)
-	}
-	m.buildScrollback()
-	return *m, nil
-}
-
 func (m *Model) handlePRRefreshed(msg prRefreshedMsg) (Model, tea.Cmd) {
-	if !m.actionDone {
-		m.actionStatus = ""
+	if cs, ok := m.scene.(*ConversationScene); ok && !cs.actionDone {
+		cs.actionStatus = ""
 	}
 	if msg.err != nil {
 		logger.Error("refresh PR: %v", msg.err)
@@ -456,21 +409,18 @@ func (m *Model) handleChatWorktreeReady(msg chatWorktreeReadyMsg) (Model, tea.Cm
 		if card.PR.Number == msg.prNumber {
 			if msg.err != nil {
 				logger.Error("worktree error for PR #%d: %v", msg.prNumber, msg.err)
-				card.ChatStatus = ""
-				card.Streaming = false
-			} else {
-				card.worktreePath = msg.path
 			}
+			card.Chat.HandleWorktreeReady(msg.path, msg.err)
 			break
 		}
 	}
 	if card := m.currentCard(); card != nil && card.PR.Number == msg.prNumber && msg.err == nil {
-		if card.Streaming {
-			card.ChatStatus = ""
+		if card.Chat.IsStreaming() {
+			card.Chat.Status = ""
 			ctx, cancel := context.WithCancel(context.Background())
-			card.chatCancel = cancel
+			card.Chat.Cancel = cancel
 			m.buildScrollback()
-			return *m, sendChatCmd(ctx, msg.path, card.PR, card.Assessment, card.chatMessages,
+			return *m, sendChatCmd(ctx, msg.path, card.PR, card.Assessment, card.Chat.Messages,
 				nil, m.app.Config.Review.Model, m.app.Repo, m.isOwnPR(card),
 				m.permSocketPath, m.program)
 		}
@@ -482,7 +432,7 @@ func (m *Model) handleChatWorktreeReady(msg chatWorktreeReadyMsg) (Model, tea.Cm
 func (m *Model) handleChatStatus(msg chatStatusMsg) (Model, tea.Cmd) {
 	for _, card := range m.cards {
 		if card.PR.Number == msg.prNumber {
-			card.ChatStatus = msg.status
+			card.Chat.HandleStatus(msg.status)
 			break
 		}
 	}
@@ -495,8 +445,7 @@ func (m *Model) handleChatStatus(msg chatStatusMsg) (Model, tea.Cmd) {
 func (m *Model) handleChatToolCall(msg chatToolCallMsg) (Model, tea.Cmd) {
 	for _, card := range m.cards {
 		if card.PR.Number == msg.prNumber {
-			card.ToolCallCount = msg.count
-			card.LastToolCall = msg.lastTool
+			card.Chat.HandleToolCall(msg.count, msg.lastTool)
 			break
 		}
 	}
@@ -509,8 +458,7 @@ func (m *Model) handleChatToolCall(msg chatToolCallMsg) (Model, tea.Cmd) {
 func (m *Model) handleChatToken(msg chatTokenMsg) (Model, tea.Cmd) {
 	for _, card := range m.cards {
 		if card.PR.Number == msg.prNumber {
-			card.ChatStatus = ""
-			card.StreamContent += msg.token
+			card.Chat.HandleToken(msg.token)
 			break
 		}
 	}
@@ -523,24 +471,10 @@ func (m *Model) handleChatToken(msg chatTokenMsg) (Model, tea.Cmd) {
 func (m *Model) handleChatDone(msg chatDoneMsg) (Model, tea.Cmd) {
 	for _, card := range m.cards {
 		if card.PR.Number == msg.prNumber {
-			card.chatCancel = nil
-			card.Streaming = false
-			card.StreamContent = ""
-			card.ChatStatus = ""
-			card.ToolCallCount = 0
-			card.LastToolCall = ""
 			if msg.err != nil {
 				logger.Error("chat error for PR #%d: %v", msg.prNumber, msg.err)
-				card.chatMessages = append(card.chatMessages, chat.Message{
-					Role:    "assistant",
-					Content: fmt.Sprintf("Error: %v", msg.err),
-				})
-			} else if msg.fullResponse != "" {
-				card.chatMessages = append(card.chatMessages, chat.Message{
-					Role:    "assistant",
-					Content: msg.fullResponse,
-				})
 			}
+			card.Chat.HandleDone(msg.fullResponse, msg.err)
 			break
 		}
 	}
@@ -548,34 +482,4 @@ func (m *Model) handleChatDone(msg chatDoneMsg) (Model, tea.Cmd) {
 		m.buildScrollback()
 	}
 	return *m, nil
-}
-
-// ---------------------------------------------------------------------------
-// Bulk approve transitions
-// ---------------------------------------------------------------------------
-
-func (m *Model) tryEnterBulkApprove() bool {
-	var items []bulkapprove.Item
-	for _, card := range m.cards {
-		if !card.Scoring && card.ScoringErr == nil && !m.isOwnPR(card) {
-			summary := ""
-			if card.Assessment != nil {
-				summary = card.Assessment.RiskSummary
-			}
-			items = append(items, bulkapprove.ItemFromCard(card.PR, card.WeightedScore, card.Verdict, summary))
-		}
-	}
-	if len(items) == 0 {
-		return false
-	}
-	m.bulkApprove = bulkapprove.New(m.app.Repo, items, m.width, m.height)
-	m.bulkApproveShown = true
-	m.bulkApproveActive = true
-	return true
-}
-
-func (m *Model) exitBulkApprove() {
-	m.bulkApproveActive = false
-	m.loadCurrentDiff()
-	m.buildScrollback()
 }

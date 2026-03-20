@@ -1,27 +1,29 @@
 package tui
 
 import (
+	"context"
 	"fmt"
-	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/sleuth-io/prx/internal/app"
 	"github.com/sleuth-io/prx/internal/tui/bulkapprove"
-	"github.com/sleuth-io/prx/internal/tui/chat"
 	"github.com/sleuth-io/prx/internal/tui/diff"
 	"github.com/sleuth-io/prx/internal/tui/perm"
 	"github.com/sleuth-io/prx/internal/tui/scoring"
-	"github.com/sleuth-io/prx/internal/tui/style"
 )
 
 var footerStyle = lipgloss.NewStyle().
 	Background(lipgloss.Color("237")).
 	Foreground(lipgloss.Color("250")).
+	Padding(0, 1)
+
+var permBannerStyle = lipgloss.NewStyle().
+	Border(lipgloss.RoundedBorder()).
+	BorderForeground(lipgloss.Color("214")).
+	Foreground(lipgloss.Color("230")).
 	Padding(0, 1)
 
 type Model struct {
@@ -40,31 +42,21 @@ type Model struct {
 	permCleanup    func()
 	pendingPerm    *permRequestMsg
 
-	// Conversation view
-	viewport viewport.Model
-	input    textarea.Model
-	overlay  overlayKind
-	diffView diff.DiffView
-	modal    commentModal
+	// Scene: active UI mode (conversation, diff overlay, bulk approve)
+	scene Scene
+	// convScene is the conversation scene, kept for returning from other scenes
+	convScene *ConversationScene
 
-	// Dialogs
-	confirm      *confirmDialog
-	actionStatus string // e.g. "Merging…", "Approving…"
-	actionDone   bool   // true when actionStatus is a final result (no spinner)
+	// Diff view: shared state loaded by Model, rendered by DiffOverlayScene
+	diffView diff.DiffView
 
 	// Bulk approve
-	bulkApprove       bulkapprove.Model
-	bulkApproveShown  bool // true once auto-shown this session
-	bulkApproveActive bool // true while bulk approve scene is displayed
+	bulkApproveShown bool // true once auto-shown this session
 
 	// Startup
 	startupDone bool // true once first PR is scored and ready to view
 	startupLog  []startupEntry
-}
-
-type startupEntry struct {
-	text string
-	done bool
+	noPRs       bool // true when no open PRs found — any key exits
 }
 
 func New(a *app.App) Model {
@@ -72,25 +64,14 @@ func New(a *app.App) Model {
 	s.Spinner = spinner.Dot
 	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
 
-	ta := textarea.New()
-	ta.Placeholder = ""
-	ta.CharLimit = 2000
-	ta.SetHeight(1)
-	ta.ShowLineNumbers = false
-	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
-	ta.BlurredStyle.CursorLine = lipgloss.NewStyle()
-	ta.FocusedStyle.Prompt = lipgloss.NewStyle()
-	ta.BlurredStyle.Prompt = lipgloss.NewStyle()
-	ta.Prompt = ""
-
-	vp := viewport.New(80, 20)
+	cs := newConversationScene()
 
 	return Model{
-		app:      a,
-		spinner:  s,
-		viewport: vp,
-		input:    ta,
-		diffView: diff.NewDiffView(80, 20),
+		app:       a,
+		spinner:   s,
+		scene:     cs,
+		convScene: cs,
+		diffView:  diff.NewDiffView(80, 20),
 		startupLog: []startupEntry{
 			{text: fmt.Sprintf("Signed in as %s", a.CurrentUser), done: true},
 			{text: fmt.Sprintf("Fetching open PRs from %s", a.Repo)},
@@ -99,7 +80,7 @@ func New(a *app.App) Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.spinner.Tick, fetchPRListCmd(m.app.Repo), m.input.Focus())
+	return tea.Batch(m.spinner.Tick, fetchPRListCmd(m.app.Repo), m.convScene.FocusInput())
 }
 
 // Update dispatches global messages first, then routes to the active scene.
@@ -118,10 +99,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handlePermRefresh(msg)
 	case perm.ConfigReloadMsg:
 		return m.handleConfigReload(msg)
-	}
-
-	if m.bulkApproveActive {
-		return m.updateBulkApprove(msg)
+	case tea.KeyMsg:
+		// Any key exits on error or no-PRs screens
+		if m.err != nil || m.noPRs {
+			return m, m.cleanupWorktrees()
+		}
+		// q/ctrl+c/ctrl+q exit during startup loading
+		if !m.startupDone {
+			key := msg.String()
+			if key == "q" || key == "ctrl+c" || key == "ctrl+q" {
+				return m, m.cleanupWorktrees()
+			}
+			return m, nil
+		}
 	}
 
 	return m.updateReview(msg)
@@ -140,179 +130,8 @@ func (m Model) View() string {
 		return m.renderStartupLog()
 	}
 
-	// Diff overlay: full-screen DiffView
-	if m.overlay == overlayDiff {
-		if m.modal.active {
-			title := "  Add comment  (Enter submit · Alt+Enter newline · Esc cancel)"
-			if m.modal.isInline {
-				title = fmt.Sprintf("  Comment on %s:%d  (Enter submit · Alt+Enter newline · Esc cancel)", m.modal.filePath, m.modal.fileLine)
-			}
-			modalContent := lipgloss.JoinVertical(lipgloss.Left,
-				style.PanelTitleFocused.Render(title),
-				lipgloss.NewStyle().Padding(0, 1).Render(m.modal.textarea.View()),
-			)
-			return lipgloss.JoinVertical(lipgloss.Left,
-				m.diffView.ViewWithModal(modalContent),
-				m.renderDiffFooter(),
-			)
-		}
-		return lipgloss.JoinVertical(lipgloss.Left,
-			m.diffView.ViewContent(),
-			m.renderDiffFooter(),
-		)
-	}
-
-	// Bulk approve scene
-	if m.inBulkApprove() {
-		return m.bulkApprove.View()
-	}
-
-	// Conversation view: viewport + input + footer
-	width := m.width
-	if width == 0 {
-		width = 80
-	}
-
-	vpContent := lipgloss.JoinHorizontal(lipgloss.Top, m.viewport.View(), style.RenderScrollbar(m.viewport))
-
-	// Claude Code-style input area with horizontal rules
-	ruleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("237"))
-	rule := ruleStyle.Render(strings.Repeat("─", width))
-	promptStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Bold(true)
-	inputLine := promptStyle.Render("❯ ") + m.input.View()
-	inputArea := lipgloss.JoinVertical(lipgloss.Left, rule, inputLine, rule)
-
-	parts := []string{vpContent, inputArea}
-	if m.confirm != nil {
-		parts = append(parts[:1], m.renderConfirmBanner(width))
-		parts = append(parts, inputArea)
-	} else if m.pendingPerm != nil {
-		parts = append(parts[:1], m.renderPermBanner(width))
-		parts = append(parts, inputArea)
-	}
-	parts = append(parts, m.renderFooter())
-	return lipgloss.JoinVertical(lipgloss.Left, parts...)
-}
-
-func (m Model) inBulkApprove() bool {
-	return m.bulkApproveActive
-}
-
-var permBannerStyle = lipgloss.NewStyle().
-	Border(lipgloss.RoundedBorder()).
-	BorderForeground(lipgloss.Color("214")).
-	Foreground(lipgloss.Color("230")).
-	Padding(0, 1)
-
-func (m Model) renderConfirmBanner(width int) string {
-	inner := fmt.Sprintf("%s\n[y] confirm   [n/esc] cancel", m.confirm.description)
-	maxW := width - 4
-	if maxW < 20 {
-		maxW = 20
-	}
-	return permBannerStyle.Width(maxW).Render(inner)
-}
-
-func (m Model) renderPermBanner(width int) string {
-	inner := fmt.Sprintf("Claude wants to: %s\n[y] allow   [n] deny", m.pendingPerm.description)
-	maxW := width - 4
-	if maxW < 20 {
-		maxW = 20
-	}
-	return permBannerStyle.Width(maxW).Render(inner)
-}
-
-func (m Model) renderFooter() string {
-	width := m.width
-	if width == 0 {
-		width = 80
-	}
-	status := fmt.Sprintf("prx  PR %d/%d", m.current+1, len(m.cards))
-	if m.actionStatus != "" && m.actionDone {
-		status += fmt.Sprintf("  %s", m.actionStatus)
-	} else if m.actionStatus != "" {
-		status += fmt.Sprintf("  %s %s", m.spinner.View(), m.actionStatus)
-	} else if pending := m.fetching + m.scoring; pending > 0 {
-		status += fmt.Sprintf("  %s %d loading", m.spinner.View(), pending)
-	}
-
-	hints := "^d diff  ^n/^p nav  /approve  /merge  /comment  ^q quit"
-	gap := width - lipgloss.Width(status) - lipgloss.Width(hints) - 2
-	if gap < 1 {
-		gap = 1
-	}
-	line := status + strings.Repeat(" ", gap) + hints
-	return footerStyle.Width(width).Render(line)
-}
-
-func (m Model) renderDiffFooter() string {
-	width := m.width
-	if width == 0 {
-		width = 80
-	}
-	status := fmt.Sprintf("prx  PR %d/%d", m.current+1, len(m.cards))
-	hints := "j/k scroll  [/] file  {/} hunk  ←/→ collapse  </> all  ? ask  c comment  q back"
-	gap := width - lipgloss.Width(status) - lipgloss.Width(hints) - 2
-	if gap < 1 {
-		gap = 1
-	}
-	line := status + strings.Repeat(" ", gap) + hints
-	return footerStyle.Width(width).Render(line)
-}
-
-// ---------------------------------------------------------------------------
-// Scrollback management
-// ---------------------------------------------------------------------------
-
-// buildScrollback rebuilds the viewport content for the current PR.
-func (m *Model) buildScrollback() {
-	card := m.currentCard()
-	if card == nil {
-		m.viewport.SetContent("")
-		return
-	}
-
-	width := m.width - 1 // reserve 1 for scrollbar
-	if width < 40 {
-		width = 40
-	}
-
-	var sections []string
-
-	// 1. Assessment block (includes PR header)
-	assessmentStr := scoring.RenderInline(m.buildRenderData(card), width)
-	sections = append(sections, assessmentStr)
-
-	// 2. Chat messages + streaming
-	if len(card.chatMessages) > 0 || card.Streaming || card.ChatStatus != "" {
-		stream := chat.StreamState{
-			Active:        card.Streaming,
-			Content:       card.StreamContent,
-			SpinnerView:   m.spinner.View(),
-			ToolCallCount: card.ToolCallCount,
-			LastToolCall:  card.LastToolCall,
-			Status:        card.ChatStatus,
-		}
-		chatStr := chat.RenderMessages(card.chatMessages, width, stream)
-		if chatStr != "" {
-			sections = append(sections, chatStr)
-		}
-	}
-
-	// 3. Action status
-	if m.actionStatus != "" {
-		var statusLine string
-		if m.actionDone {
-			statusLine = "\n  " + m.actionStatus
-		} else {
-			statusLine = fmt.Sprintf("\n  %s %s", m.spinner.View(), m.actionStatus)
-		}
-		sections = append(sections, statusLine)
-	}
-
-	content := strings.Join(sections, "\n")
-	m.viewport.SetContent(content)
-	m.viewport.GotoBottom()
+	// Active scene (conversation, diff overlay, or bulk approve)
+	return m.scene.View(&m)
 }
 
 // ---------------------------------------------------------------------------
@@ -329,90 +148,17 @@ func (m *Model) resizeLayout() {
 		height = 24
 	}
 
-	if m.overlay == overlayDiff {
-		footerH := 1
-		m.diffView.SetSize(width, height-footerH)
-		return
-	}
-
-	inputH := m.inputHeight() + 2 // +2 for top and bottom rules
+	// Always resize diffView (shared state)
 	footerH := 1
-	vpH := height - inputH - footerH
-	if vpH < 4 {
-		vpH = 4
-	}
-	m.viewport.Width = width - 1 // reserve for scrollbar
-	m.viewport.Height = vpH
-	m.input.SetWidth(width - 4)
-}
+	m.diffView.SetSize(width, height-footerH)
 
-const maxInputLines = 5
-
-// inputHeight returns the current textarea height in lines.
-func (m *Model) inputHeight() int {
-	return m.input.Height()
-}
-
-// updateInputHeight adjusts textarea height based on content, 1-5 lines.
-func (m *Model) updateInputHeight() {
-	content := m.input.Value()
-	lines := strings.Count(content, "\n") + 1
-	if lines < 1 {
-		lines = 1
-	}
-	if lines > maxInputLines {
-		lines = maxInputLines
-	}
-	if lines != m.input.Height() {
-		m.input.SetHeight(lines)
-		m.resizeLayout()
-	}
+	// Resize active scene
+	m.scene.Resize(width, height)
 }
 
 // ---------------------------------------------------------------------------
-// Startup log rendering & helpers
+// Model helpers
 // ---------------------------------------------------------------------------
-
-var (
-	startupTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("75"))
-	startupDoneStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("242"))
-	startupCheckStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
-)
-
-func (m Model) renderStartupLog() string {
-	var b strings.Builder
-	width := m.width
-	if width == 0 {
-		width = 80
-	}
-	title := " prx "
-	lineStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("237"))
-	pad := (width - len(title)) / 2
-	if pad < 2 {
-		pad = 2
-	}
-	line := lineStyle.Render(strings.Repeat("─", pad)) + startupTitleStyle.Render(title) + lineStyle.Render(strings.Repeat("─", width-pad-len(title)))
-	b.WriteString("\n" + line + "\n\n")
-
-	entries := m.startupLog
-	maxVisible := 12
-	start := 0
-	if len(entries) > maxVisible {
-		start = len(entries) - maxVisible
-	}
-	for i := start; i < len(entries); i++ {
-		entry := entries[i]
-		if entry.done {
-			b.WriteString(fmt.Sprintf("  %s %s\n",
-				startupCheckStyle.Render("✓"),
-				startupDoneStyle.Render(entry.text)))
-		} else {
-			b.WriteString(fmt.Sprintf("  %s %s\n", m.spinner.View(), entry.text))
-		}
-	}
-	b.WriteString("\n  Press q to quit.\n")
-	return b.String()
-}
 
 func truncate(s string, max int) string {
 	if len(s) <= max {
@@ -420,24 +166,6 @@ func truncate(s string, max int) string {
 	}
 	return s[:max-1] + "…"
 }
-
-func (m *Model) logDone() {
-	for i := len(m.startupLog) - 1; i >= 0; i-- {
-		if !m.startupLog[i].done {
-			m.startupLog[i].done = true
-			return
-		}
-	}
-}
-
-func (m *Model) logStep(text string) {
-	m.logDone()
-	m.startupLog = append(m.startupLog, startupEntry{text: text})
-}
-
-// ---------------------------------------------------------------------------
-// Model helpers
-// ---------------------------------------------------------------------------
 
 func (m Model) currentCard() *PRCard {
 	if m.current < len(m.cards) {
@@ -450,7 +178,7 @@ func (m Model) isOwnPR(card *PRCard) bool {
 	return card.PR.Author == m.app.CurrentUser
 }
 
-func (m *Model) navigatePR(delta int) {
+func (m *Model) navigatePR(delta int, s *ConversationScene) {
 	if !m.bulkApproveShown && m.scoring == 0 && m.fetching == 0 {
 		if m.tryEnterBulkApprove() {
 			return
@@ -461,10 +189,10 @@ func (m *Model) navigatePR(delta int) {
 		return
 	}
 	m.current = next
-	m.actionStatus = ""
-	m.actionDone = false
+	s.actionStatus = ""
+	s.actionDone = false
 	m.loadCurrentDiff()
-	m.buildScrollback()
+	s.BuildScrollback(m)
 }
 
 func (m *Model) loadCurrentDiff() {
@@ -489,11 +217,47 @@ func (m *Model) buildRenderData(card *PRCard) scoring.RenderData {
 		ScoringErr:       card.ScoringErr,
 		SpinnerView:      m.spinner.View(),
 		Criteria:         m.app.Config.Criteria,
-		BodyExpanded:     false, // no longer collapsible in conversation view
+		BodyExpanded:     false,
 		ScoringToolCount: card.ScoringToolCount,
 		ScoringLastTool:  card.ScoringLastTool,
 		ScoringStatus:    card.ScoringStatus,
 	}
+}
+
+// startChatCmd creates a sendChatCmd for the given card.
+func (m *Model) startChatCmd(card *PRCard) tea.Cmd {
+	ctx, cancel := context.WithCancel(context.Background())
+	card.Chat.Cancel = cancel
+	return sendChatCmd(ctx, card.Chat.WorktreePath, card.PR, card.Assessment, card.Chat.Messages,
+		nil, m.app.Config.Review.Model, m.app.Repo, m.isOwnPR(card),
+		m.permSocketPath, m.program)
+}
+
+// hardReset cancels all in-flight work, clears cache, and restarts from scratch.
+func (m *Model) hardReset() tea.Cmd {
+	var cmds []tea.Cmd
+	for _, card := range m.cards {
+		card.Chat.CancelStreaming()
+		if card.Chat.WorktreePath != "" {
+			cmds = append(cmds, removeWorktreeCmd(m.app.RepoDir, card.Chat.WorktreePath))
+		}
+	}
+	m.convScene.actionStatus = ""
+	m.convScene.actionDone = false
+	m.scene = m.convScene
+	m.app.Cache.Clear()
+	m.cards = nil
+	m.total = 0
+	m.fetching = 0
+	m.scoring = 0
+	m.current = 0
+	m.startupDone = false
+	m.startupLog = []startupEntry{
+		{text: fmt.Sprintf("Signed in as %s", m.app.CurrentUser), done: true},
+		{text: fmt.Sprintf("Fetching open PRs from %s", m.app.Repo)},
+	}
+	cmds = append(cmds, m.spinner.Tick, fetchPRListCmd(m.app.Repo))
+	return tea.Batch(cmds...)
 }
 
 func (m *Model) cleanupWorktrees() tea.Cmd {
@@ -503,10 +267,36 @@ func (m *Model) cleanupWorktrees() tea.Cmd {
 	}
 	var cmds []tea.Cmd
 	for _, card := range m.cards {
-		if card.worktreePath != "" {
-			cmds = append(cmds, removeWorktreeCmd(m.app.RepoDir, card.worktreePath))
+		if card.Chat.WorktreePath != "" {
+			cmds = append(cmds, removeWorktreeCmd(m.app.RepoDir, card.Chat.WorktreePath))
 		}
 	}
 	cmds = append(cmds, tea.Quit)
 	return tea.Batch(cmds...)
+}
+
+// buildScrollback is a convenience that delegates to the conversation scene.
+func (m *Model) buildScrollback() {
+	m.convScene.BuildScrollback(m)
+}
+
+// tryEnterBulkApprove creates a bulk approve scene if there are eligible PRs.
+func (m *Model) tryEnterBulkApprove() bool {
+	var items []bulkapprove.Item
+	for _, card := range m.cards {
+		if !card.Scoring && card.ScoringErr == nil && !m.isOwnPR(card) {
+			summary := ""
+			if card.Assessment != nil {
+				summary = card.Assessment.RiskSummary
+			}
+			items = append(items, bulkapprove.ItemFromCard(card.PR, card.WeightedScore, card.Verdict, summary))
+		}
+	}
+	if len(items) == 0 {
+		return false
+	}
+	ba := bulkapprove.New(m.app.Repo, items, m.width, m.height)
+	m.bulkApproveShown = true
+	m.scene = newBulkApproveScene(ba, m.convScene, m.width, m.height)
+	return true
 }

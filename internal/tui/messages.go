@@ -1,11 +1,9 @@
 package tui
 
 import (
-	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/sleuth-io/prx/internal/ai"
 	"github.com/sleuth-io/prx/internal/github"
-	"github.com/sleuth-io/prx/internal/tui/chat"
 	"github.com/sleuth-io/prx/internal/tui/diff"
 )
 
@@ -14,60 +12,9 @@ type SetProgramMsg struct {
 	Program *tea.Program
 }
 
-// PRCard is a PR — may be in-progress (Scoring=true) or fully assessed.
-type PRCard struct {
-	PR                 *github.PR
-	Assessment         *ai.Assessment
-	WeightedScore      float64
-	Verdict            string
-	Scoring            bool
-	ScoringErr         error
-	ScoringToolCount   int
-	ScoringLastTool    string
-	ScoringStatus      string
-	parsedFiles        []*diff.File   // pre-parsed diff files (nil until ready)
-	annotationsApplied bool           // true once hunk annotations have been applied
-	chatMessages       []chat.Message // in-memory chat history per PR
-	chatCancel         func()         // cancels the running claude process (nil if not streaming)
-	worktreePath       string         // git worktree path for chat (empty until created)
-	// Chat streaming state (per-PR so navigating away preserves it)
-	Streaming     bool
-	StreamContent string
-	ToolCallCount int
-	LastToolCall  string
-	ChatStatus    string
-}
-
 type prDiffParsedMsg struct {
 	prNumber int
 	files    []*diff.File
-}
-
-// overlayKind represents what full-screen overlay is shown on top of conversation.
-type overlayKind int
-
-const (
-	overlayNone overlayKind = iota
-	overlayDiff
-)
-
-type commentModal struct {
-	active    bool
-	isInline  bool
-	filePath  string
-	fileLine  int
-	commitSHA string
-	textarea  textarea.Model
-}
-
-type commentSubmittedMsg struct {
-	prNumber    int
-	isInline    bool
-	filePath    string
-	fileLine    int
-	body        string
-	pendingItem *diff.CommentItem
-	err         error
 }
 
 type prListFetchedMsg struct {
@@ -148,6 +95,16 @@ type confirmDialog struct {
 	description  string
 	actionStatus string // set on m.actionStatus when confirmed
 	cmd          tea.Cmd
+}
+
+type commentSubmittedMsg struct {
+	prNumber    int
+	isInline    bool
+	filePath    string
+	fileLine    int
+	body        string
+	pendingItem *diff.CommentItem
+	err         error
 }
 
 type prRefreshedMsg struct {
