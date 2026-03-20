@@ -31,15 +31,18 @@ var (
 
 // RenderData contains everything needed to render the assessment panel.
 type RenderData struct {
-	PR           *github.PR
-	Assessment   *ai.Assessment
-	Score        float64
-	Verdict      string
-	Scoring      bool
-	ScoringErr   error
-	SpinnerView  string
-	Criteria     []config.Criterion
-	BodyExpanded bool
+	PR               *github.PR
+	Assessment       *ai.Assessment
+	Score            float64
+	Verdict          string
+	Scoring          bool
+	ScoringErr       error
+	SpinnerView      string
+	Criteria         []config.Criterion
+	BodyExpanded     bool
+	ScoringToolCount int
+	ScoringLastTool  string
+	ScoringStatus    string
 }
 
 // Panel is the assessment/scoring panel component.
@@ -63,6 +66,11 @@ func (p *Panel) ScrollUp(n int)   { p.viewport.ScrollUp(n) }
 func (p *Panel) ScrollDown(n int) { p.viewport.ScrollDown(n) }
 func (p *Panel) AtBottom() bool   { return p.viewport.AtBottom() }
 func (p *Panel) GotoTop()         { p.viewport.GotoTop() }
+
+// RenderInline renders the assessment as a string for embedding in a scrollback.
+func RenderInline(data RenderData, width int) string {
+	return buildContent(data, width)
+}
 
 // SetContent rebuilds the assessment panel content from data.
 func (p *Panel) SetContent(data RenderData) {
@@ -142,7 +150,13 @@ func buildContent(data RenderData, vpWidth int) string {
 
 	var riskLine string
 	if data.Scoring {
-		riskLine = fmt.Sprintf("  %s Scoring with Claude...", data.SpinnerView)
+		if data.ScoringToolCount > 0 && data.ScoringLastTool != "" {
+			riskLine = fmt.Sprintf("  %s Scoring... %s", data.SpinnerView, data.ScoringLastTool)
+		} else if data.ScoringStatus != "" {
+			riskLine = fmt.Sprintf("  %s %s", data.SpinnerView, data.ScoringStatus)
+		} else {
+			riskLine = fmt.Sprintf("  %s Scoring with Claude...", data.SpinnerView)
+		}
 	} else if data.ScoringErr != nil {
 		riskLine = "  " + verdictReject.Render(fmt.Sprintf("Scoring error: %v", data.ScoringErr))
 	} else {

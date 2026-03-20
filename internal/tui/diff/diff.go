@@ -58,6 +58,7 @@ type collapsible struct {
 type Hunk struct {
 	HeaderLine    string
 	Rendered      []string
+	RawLines      []string // unstyled line content (parallel to Rendered)
 	LineNums      []int
 	Additions     int
 	Deletions     int
@@ -519,6 +520,53 @@ func (d *DiffView) CurrentLineTarget() (path string, line int) {
 		return "", 0
 	}
 	return f.Name, ln
+}
+
+// DiffQuote captures a quoted line from the diff for embedding in chat.
+type DiffQuote struct {
+	File       string // file path
+	Line       int    // line number
+	RawContent string // unstyled line content (e.g. "+  def foo():")
+	StyledLine string // ANSI-styled rendered line from the diff
+}
+
+// CurrentQuote returns the diff line at the cursor for quoting in chat.
+// Returns nil if cursor isn't on a diff line.
+func (d *DiffView) CurrentQuote() *DiffQuote {
+	path, line := d.CurrentLineTarget()
+	if path == "" {
+		return nil
+	}
+	var fileCol *collapsible
+	var hunkCol *collapsible
+	for i := range d.collapsibles {
+		c := &d.collapsibles[i]
+		if c.lineIdx > d.cursorLine {
+			break
+		}
+		if c.kind == kindFile {
+			fileCol = c
+			hunkCol = nil
+		}
+		if c.kind == kindHunk {
+			hunkCol = c
+		}
+	}
+	q := &DiffQuote{File: path, Line: line}
+	if fileCol == nil || hunkCol == nil {
+		return q
+	}
+	f := d.files[fileCol.fileIdx]
+	h := f.Hunks[hunkCol.hunkIdx]
+	offset := d.cursorLine - hunkCol.lineIdx - 1
+	if offset < 0 || offset >= len(h.RawLines) {
+		return q
+	}
+	q.RawContent = h.RawLines[offset]
+	if offset < len(h.Rendered) {
+		q.StyledLine = h.Rendered[offset]
+	}
+	return q
 }
 
 func (d DiffView) TitleWithCommentCount() string {

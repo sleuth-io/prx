@@ -22,12 +22,20 @@ type PRCard struct {
 	Verdict            string
 	Scoring            bool
 	ScoringErr         error
-	parsedFiles        []*diff.File    // pre-parsed diff files (nil until ready)
-	annotationsApplied bool            // true once hunk annotations have been applied
-	chatMessages       []chat.Message  // in-memory chat history per PR
-	chatContext        *ai.DiffContext // file/line the reviewer was looking at when chat opened
-	chatCancel         func()          // cancels the running claude process (nil if not streaming)
-	worktreePath       string          // git worktree path for chat (empty until created)
+	ScoringToolCount   int
+	ScoringLastTool    string
+	ScoringStatus      string
+	parsedFiles        []*diff.File   // pre-parsed diff files (nil until ready)
+	annotationsApplied bool           // true once hunk annotations have been applied
+	chatMessages       []chat.Message // in-memory chat history per PR
+	chatCancel         func()         // cancels the running claude process (nil if not streaming)
+	worktreePath       string         // git worktree path for chat (empty until created)
+	// Chat streaming state (per-PR so navigating away preserves it)
+	Streaming     bool
+	StreamContent string
+	ToolCallCount int
+	LastToolCall  string
+	ChatStatus    string
 }
 
 type prDiffParsedMsg struct {
@@ -35,22 +43,12 @@ type prDiffParsedMsg struct {
 	files    []*diff.File
 }
 
-// scene represents the top-level UI mode — which full-screen view is shown.
-type scene int
+// overlayKind represents what full-screen overlay is shown on top of conversation.
+type overlayKind int
 
 const (
-	sceneReview      scene = iota // loading screen and main PR review
-	sceneBulkApprove              // bulk approve overlay
-)
-
-// focus represents which panel is active within sceneReview.
-type focus int
-
-const (
-	focusAssessment focus = iota
-	focusDiff
-	focusModal
-	focusChat
+	overlayNone overlayKind = iota
+	overlayDiff
 )
 
 type commentModal struct {
@@ -59,7 +57,6 @@ type commentModal struct {
 	filePath  string
 	fileLine  int
 	commitSHA string
-	prevFocus focus
 	textarea  textarea.Model
 }
 
@@ -101,6 +98,17 @@ type actionDoneMsg struct {
 	pr     int
 	action string
 	err    error
+}
+
+type scoringToolCallMsg struct {
+	prNumber int
+	count    int
+	lastTool string
+}
+
+type scoringStatusMsg struct {
+	prNumber int
+	status   string
 }
 
 type chatStatusMsg struct {

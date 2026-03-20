@@ -71,10 +71,11 @@ func renderFileDiff(f *gitdiff.File) []*Hunk {
 				dels++
 			}
 		}
-		rendered, lineNums := renderFragmentLines(frag.Lines, lexer, int(frag.NewPosition))
+		rendered, rawLines, lineNums := renderFragmentLines(frag.Lines, lexer, int(frag.NewPosition))
 		hunks = append(hunks, &Hunk{
 			HeaderLine: hunkHeader,
 			Rendered:   rendered,
+			RawLines:   rawLines,
 			LineNums:   lineNums,
 			Additions:  adds,
 			Deletions:  dels,
@@ -86,8 +87,9 @@ func renderFileDiff(f *gitdiff.File) []*Hunk {
 }
 
 // renderFragmentLines renders diff lines, pairing equal-count remove/add runs for inline diff.
-func renderFragmentLines(fragLines []gitdiff.Line, lexer chroma.Lexer, startLine int) ([]string, []int) {
+func renderFragmentLines(fragLines []gitdiff.Line, lexer chroma.Lexer, startLine int) ([]string, []string, []int) {
 	var out []string
+	var raw []string
 	var nums []int
 	newLine := startLine
 	i := 0
@@ -111,6 +113,7 @@ func renderFragmentLines(fragLines []gitdiff.Line, lexer chroma.Lexer, startLine
 				old := strings.TrimRight(fragLines[i+n].Line, "\n")
 				new := strings.TrimRight(fragLines[j+n].Line, "\n")
 				out = append(out, renderInlineDiffLines(old, new)...)
+				raw = append(raw, "-"+old, "+"+new)
 				nums = append(nums, -1, newLine)
 				newLine++
 			}
@@ -118,29 +121,43 @@ func renderFragmentLines(fragLines []gitdiff.Line, lexer chroma.Lexer, startLine
 		} else if numDels == 0 {
 			l := fragLines[i]
 			out = append(out, renderDiffLine(l, lexer))
+			rawLine := strings.TrimRight(l.Line, "\n")
 			switch l.Op {
-			case gitdiff.OpAdd, gitdiff.OpContext:
+			case gitdiff.OpAdd:
+				raw = append(raw, "+"+rawLine)
+				nums = append(nums, newLine)
+				newLine++
+			case gitdiff.OpContext:
+				raw = append(raw, " "+rawLine)
 				nums = append(nums, newLine)
 				newLine++
 			default:
+				raw = append(raw, "-"+rawLine)
 				nums = append(nums, -1)
 			}
 			i++
 		} else {
 			for _, l := range fragLines[i:k] {
 				out = append(out, renderDiffLine(l, lexer))
+				rawLine := strings.TrimRight(l.Line, "\n")
 				switch l.Op {
-				case gitdiff.OpAdd, gitdiff.OpContext:
+				case gitdiff.OpAdd:
+					raw = append(raw, "+"+rawLine)
+					nums = append(nums, newLine)
+					newLine++
+				case gitdiff.OpContext:
+					raw = append(raw, " "+rawLine)
 					nums = append(nums, newLine)
 					newLine++
 				default:
+					raw = append(raw, "-"+rawLine)
 					nums = append(nums, -1)
 				}
 			}
 			i = k
 		}
 	}
-	return out, nums
+	return out, raw, nums
 }
 
 func renderInlineDiffLines(old, new string) []string {

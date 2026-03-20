@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/textarea"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -22,55 +24,73 @@ var footerStyle = lipgloss.NewStyle().
 	Foreground(lipgloss.Color("250")).
 	Padding(0, 1)
 
-const defaultAssessmentLines = 10
-
 type Model struct {
-	app              *app.App
-	cards            []*PRCard
-	total            int
-	fetching         int // PRs whose details are still being fetched
-	scoring          int // PRs whose assessments are still in progress
-	current          int
-	scene            scene
-	focus            focus
-	diffView         diff.DiffView
-	chatView         chat.View
-	chatActive       bool // true when chat panel is shown instead of diff
-	assessmentPanel  scoring.Panel
-	spinner          spinner.Model
-	modal            commentModal
-	confirm          *confirmDialog
-	actionStatus     string // e.g. "Merging…", "Approving…"
-	actionDone       bool   // true when actionStatus is a final result (no spinner)
-	bodyExpanded     bool
-	program          *tea.Program
-	err              error
-	width            int
-	height           int
-	permSocketPath   string
-	permCleanup      func()
-	pendingPerm      *permRequestMsg
-	bulkApprove      bulkapprove.Model
-	bulkApproveShown bool // true once auto-shown this session
-	startupDone      bool // true once first PR is scored and ready to view
-	startupLog       []startupEntry
+	app            *app.App
+	cards          []*PRCard
+	total          int
+	fetching       int // PRs whose details are still being fetched
+	scoring        int // PRs whose assessments are still in progress
+	current        int
+	spinner        spinner.Model
+	program        *tea.Program
+	err            error
+	width          int
+	height         int
+	permSocketPath string
+	permCleanup    func()
+	pendingPerm    *permRequestMsg
+
+	// Conversation view
+	viewport viewport.Model
+	input    textarea.Model
+	overlay  overlayKind
+	diffView diff.DiffView
+	modal    commentModal
+
+	// Dialogs
+	confirm      *confirmDialog
+	actionStatus string // e.g. "Merging…", "Approving…"
+	actionDone   bool   // true when actionStatus is a final result (no spinner)
+
+	// Bulk approve
+	bulkApprove       bulkapprove.Model
+	bulkApproveShown  bool // true once auto-shown this session
+	bulkApproveActive bool // true while bulk approve scene is displayed
+
+	// Startup
+	startupDone bool // true once first PR is scored and ready to view
+	startupLog  []startupEntry
 }
 
 type startupEntry struct {
 	text string
-	done bool // true = completed (shown with checkmark), false = in-progress (shown with spinner)
+	done bool
 }
 
 func New(a *app.App) Model {
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
+
+	ta := textarea.New()
+	ta.Placeholder = ""
+	ta.CharLimit = 2000
+	ta.SetHeight(1)
+	ta.ShowLineNumbers = false
+	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
+	ta.BlurredStyle.CursorLine = lipgloss.NewStyle()
+	ta.FocusedStyle.Prompt = lipgloss.NewStyle()
+	ta.BlurredStyle.Prompt = lipgloss.NewStyle()
+	ta.Prompt = ""
+
+	vp := viewport.New(80, 20)
+
 	return Model{
-		app:             a,
-		spinner:         s,
-		diffView:        diff.NewDiffView(80, 20),
-		chatView:        chat.New(80, 20),
-		assessmentPanel: scoring.New(80, defaultAssessmentLines),
+		app:      a,
+		spinner:  s,
+		viewport: vp,
+		input:    ta,
+		diffView: diff.NewDiffView(80, 20),
 		startupLog: []startupEntry{
 			{text: fmt.Sprintf("Signed in as %s", a.CurrentUser), done: true},
 			{text: fmt.Sprintf("Fetching open PRs from %s", a.Repo)},
@@ -79,7 +99,7 @@ func New(a *app.App) Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.spinner.Tick, fetchPRListCmd(m.app.Repo))
+	return tea.Batch(m.spinner.Tick, fetchPRListCmd(m.app.Repo), m.input.Focus())
 }
 
 // Update dispatches global messages first, then routes to the active scene.
@@ -100,9 +120,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleConfigReload(msg)
 	}
 
-	if m.scene == sceneBulkApprove {
+	if m.bulkApproveActive {
 		return m.updateBulkApprove(msg)
 	}
+
 	return m.updateReview(msg)
 }
 
@@ -115,123 +136,66 @@ func (m Model) View() string {
 		return fmt.Sprintf("\nError: %v\n\nPress q to quit.\n", m.err)
 	}
 
-	if m.scene == sceneBulkApprove {
-		return m.bulkApprove.View()
-	}
-
 	if !m.startupDone {
 		return m.renderStartupLog()
 	}
 
+	// Diff overlay: full-screen DiffView
+	if m.overlay == overlayDiff {
+		if m.modal.active {
+			title := "  Add comment  (Enter submit · Alt+Enter newline · Esc cancel)"
+			if m.modal.isInline {
+				title = fmt.Sprintf("  Comment on %s:%d  (Enter submit · Alt+Enter newline · Esc cancel)", m.modal.filePath, m.modal.fileLine)
+			}
+			modalContent := lipgloss.JoinVertical(lipgloss.Left,
+				style.PanelTitleFocused.Render(title),
+				lipgloss.NewStyle().Padding(0, 1).Render(m.modal.textarea.View()),
+			)
+			return lipgloss.JoinVertical(lipgloss.Left,
+				m.diffView.ViewWithModal(modalContent),
+				m.renderDiffFooter(),
+			)
+		}
+		return lipgloss.JoinVertical(lipgloss.Left,
+			m.diffView.ViewContent(),
+			m.renderDiffFooter(),
+		)
+	}
+
+	// Bulk approve scene
+	if m.inBulkApprove() {
+		return m.bulkApprove.View()
+	}
+
+	// Conversation view: viewport + input + footer
 	width := m.width
 	if width == 0 {
 		width = 80
 	}
 
-	var assessmentTitle string
-	if m.focus == focusAssessment {
-		var hint string
-		if card := m.currentCard(); card != nil && m.isOwnPR(card) {
-			hint = "m merge  c comment  n/p navigate  ? chat  tab to diff"
-		} else {
-			hint = "a approve  r request-changes  c comment  n/p navigate  ? chat  tab to diff"
-		}
-		assessmentTitle = style.RenderPanelTitle("Assessment", hint, true, width)
-	} else {
-		assessmentTitle = style.RenderPanelTitle("Assessment", "tab to focus", false, width)
-	}
-	assessmentContent := lipgloss.JoinHorizontal(lipgloss.Top, m.assessmentPanel.ViewContent(), style.RenderScrollbar(m.assessmentPanel.Viewport()))
-	assessmentPanel := lipgloss.JoinVertical(lipgloss.Left, assessmentTitle, assessmentContent)
+	vpContent := lipgloss.JoinHorizontal(lipgloss.Top, m.viewport.View(), style.RenderScrollbar(m.viewport))
 
-	if m.modal.active {
-		title := "  Add comment  (Enter submit · Alt+Enter newline · Esc cancel)"
-		if m.modal.isInline {
-			title = fmt.Sprintf("  Comment on %s:%d  (Enter submit · Alt+Enter newline · Esc cancel)", m.modal.filePath, m.modal.fileLine)
-		}
-		modalContent := lipgloss.JoinVertical(lipgloss.Left,
-			style.PanelTitleFocused.Render(title),
-			lipgloss.NewStyle().Padding(0, 1).Render(m.modal.textarea.View()),
-		)
-		return lipgloss.JoinVertical(lipgloss.Left,
-			assessmentPanel,
-			m.diffView.ViewWithModal(modalContent),
-			m.renderFooter(),
-		)
-	}
+	// Claude Code-style input area with horizontal rules
+	ruleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("237"))
+	rule := ruleStyle.Render(strings.Repeat("─", width))
+	promptStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Bold(true)
+	inputLine := promptStyle.Render("❯ ") + m.input.View()
+	inputArea := lipgloss.JoinVertical(lipgloss.Left, rule, inputLine, rule)
 
-	showChat := m.chatActive && (m.focus == focusChat || m.focus == focusAssessment)
-	tabBar := m.renderTabBar(width, !showChat, showChat)
-	var content string
-	if showChat {
-		content = m.chatView.ViewContent()
-	} else {
-		content = m.diffView.ViewContent()
-	}
-	parts := []string{assessmentPanel, tabBar, content}
+	parts := []string{vpContent, inputArea}
 	if m.confirm != nil {
-		parts = append(parts, m.renderConfirmBanner(width))
+		parts = append(parts[:1], m.renderConfirmBanner(width))
+		parts = append(parts, inputArea)
 	} else if m.pendingPerm != nil {
-		parts = append(parts, m.renderPermBanner(width))
+		parts = append(parts[:1], m.renderPermBanner(width))
+		parts = append(parts, inputArea)
 	}
 	parts = append(parts, m.renderFooter())
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
 }
 
-func (m Model) renderTabBar(width int, diffActive, chatActive bool) string {
-	focused := m.focus == focusDiff || m.focus == focusChat
-
-	var sep string
-	var lineCol, activeCol, inactiveCol lipgloss.Color
-	if focused {
-		sep = "━"
-		lineCol = lipgloss.Color("75")
-		activeCol = lipgloss.Color("255")
-		inactiveCol = lipgloss.Color("250")
-	} else {
-		sep = "─"
-		lineCol = lipgloss.Color("244")
-		activeCol = lipgloss.Color("250")
-		inactiveCol = lipgloss.Color("244")
-	}
-	lineS := lipgloss.NewStyle().Foreground(lineCol)
-
-	diffName := m.diffView.TitleWithCommentCount()
-	diffS := lipgloss.NewStyle().Foreground(inactiveCol)
-	if diffActive {
-		diffS = lipgloss.NewStyle().Foreground(activeCol).Bold(focused)
-	}
-
-	chatName := m.chatView.TabName()
-	chatS := lipgloss.NewStyle().Foreground(inactiveCol)
-	if chatActive {
-		chatS = lipgloss.NewStyle().Foreground(activeCol).Bold(focused)
-	}
-
-	left := lineS.Render(sep+sep+" ") +
-		diffS.Render(diffName) +
-		lineS.Render(" "+sep+sep+" ") +
-		chatS.Render(chatName) +
-		lineS.Render(" ")
-
-	var hint string
-	if diffActive && m.focus == focusDiff {
-		hint = "←/→ collapse/expand  [/] file  {/} hunk  c comment"
-	} else if chatActive && m.focus == focusChat {
-		hint = "enter send  alt+enter newline  esc stop/close"
-	} else if !m.chatActive {
-		hint = "? chat  tab to focus"
-	} else {
-		hint = "tab to focus"
-	}
-
-	hintS := lipgloss.NewStyle().Foreground(lineCol).Faint(!focused)
-	right := hintS.Render(hint) + lineS.Render(" "+sep+sep)
-
-	fill := width - lipgloss.Width(left) - lipgloss.Width(right)
-	if fill < 0 {
-		fill = 0
-	}
-	return left + lineS.Render(strings.Repeat(sep, fill)) + right
+func (m Model) inBulkApprove() bool {
+	return m.bulkApproveActive
 }
 
 var permBannerStyle = lipgloss.NewStyle().
@@ -271,20 +235,138 @@ func (m Model) renderFooter() string {
 	} else if pending := m.fetching + m.scoring; pending > 0 {
 		status += fmt.Sprintf("  %s %d loading", m.spinner.View(), pending)
 	}
-	var hints string
-	if m.chatActive && m.focus == focusChat {
-		hints = "esc stop/close  |  tab  |  ctrl+n/p nav  |  ctrl+r refresh  |  ctrl+c quit"
-	} else if m.chatActive {
-		hints = "? chat  |  tab  |  ctrl+n/p nav  |  ctrl+r refresh  |  q quit"
-	} else {
-		hints = "? chat  |  q quit  |  tab  |  p/n nav  |  ctrl+b bulk  |  ctrl+r refresh"
-	}
+
+	hints := "^d diff  ^n/^p nav  /approve  /merge  /comment  ^q quit"
 	gap := width - lipgloss.Width(status) - lipgloss.Width(hints) - 2
 	if gap < 1 {
 		gap = 1
 	}
 	line := status + strings.Repeat(" ", gap) + hints
 	return footerStyle.Width(width).Render(line)
+}
+
+func (m Model) renderDiffFooter() string {
+	width := m.width
+	if width == 0 {
+		width = 80
+	}
+	status := fmt.Sprintf("prx  PR %d/%d", m.current+1, len(m.cards))
+	hints := "j/k scroll  [/] file  {/} hunk  ←/→ collapse  </> all  ? ask  c comment  q back"
+	gap := width - lipgloss.Width(status) - lipgloss.Width(hints) - 2
+	if gap < 1 {
+		gap = 1
+	}
+	line := status + strings.Repeat(" ", gap) + hints
+	return footerStyle.Width(width).Render(line)
+}
+
+// ---------------------------------------------------------------------------
+// Scrollback management
+// ---------------------------------------------------------------------------
+
+// buildScrollback rebuilds the viewport content for the current PR.
+func (m *Model) buildScrollback() {
+	card := m.currentCard()
+	if card == nil {
+		m.viewport.SetContent("")
+		return
+	}
+
+	width := m.width - 1 // reserve 1 for scrollbar
+	if width < 40 {
+		width = 40
+	}
+
+	var sections []string
+
+	// 1. Assessment block (includes PR header)
+	assessmentStr := scoring.RenderInline(m.buildRenderData(card), width)
+	sections = append(sections, assessmentStr)
+
+	// 2. Chat messages + streaming
+	if len(card.chatMessages) > 0 || card.Streaming || card.ChatStatus != "" {
+		stream := chat.StreamState{
+			Active:        card.Streaming,
+			Content:       card.StreamContent,
+			SpinnerView:   m.spinner.View(),
+			ToolCallCount: card.ToolCallCount,
+			LastToolCall:  card.LastToolCall,
+			Status:        card.ChatStatus,
+		}
+		chatStr := chat.RenderMessages(card.chatMessages, width, stream)
+		if chatStr != "" {
+			sections = append(sections, chatStr)
+		}
+	}
+
+	// 3. Action status
+	if m.actionStatus != "" {
+		var statusLine string
+		if m.actionDone {
+			statusLine = "\n  " + m.actionStatus
+		} else {
+			statusLine = fmt.Sprintf("\n  %s %s", m.spinner.View(), m.actionStatus)
+		}
+		sections = append(sections, statusLine)
+	}
+
+	content := strings.Join(sections, "\n")
+	m.viewport.SetContent(content)
+	m.viewport.GotoBottom()
+}
+
+// ---------------------------------------------------------------------------
+// Layout
+// ---------------------------------------------------------------------------
+
+func (m *Model) resizeLayout() {
+	width := m.width
+	if width == 0 {
+		width = 80
+	}
+	height := m.height
+	if height == 0 {
+		height = 24
+	}
+
+	if m.overlay == overlayDiff {
+		footerH := 1
+		m.diffView.SetSize(width, height-footerH)
+		return
+	}
+
+	inputH := m.inputHeight() + 2 // +2 for top and bottom rules
+	footerH := 1
+	vpH := height - inputH - footerH
+	if vpH < 4 {
+		vpH = 4
+	}
+	m.viewport.Width = width - 1 // reserve for scrollbar
+	m.viewport.Height = vpH
+	m.input.SetWidth(width - 4)
+}
+
+const maxInputLines = 5
+
+// inputHeight returns the current textarea height in lines.
+func (m *Model) inputHeight() int {
+	return m.input.Height()
+}
+
+// updateInputHeight adjusts textarea height based on content, 1-5 lines.
+func (m *Model) updateInputHeight() {
+	content := m.input.Value()
+	lines := strings.Count(content, "\n") + 1
+	if lines < 1 {
+		lines = 1
+	}
+	if lines > maxInputLines {
+		lines = maxInputLines
+	}
+	if lines != m.input.Height() {
+		m.input.SetHeight(lines)
+		m.resizeLayout()
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -312,7 +394,6 @@ func (m Model) renderStartupLog() string {
 	line := lineStyle.Render(strings.Repeat("─", pad)) + startupTitleStyle.Render(title) + lineStyle.Render(strings.Repeat("─", width-pad-len(title)))
 	b.WriteString("\n" + line + "\n\n")
 
-	// Show at most the last 12 entries to avoid scrolling off screen.
 	entries := m.startupLog
 	maxVisible := 12
 	start := 0
@@ -340,7 +421,6 @@ func truncate(s string, max int) string {
 	return s[:max-1] + "…"
 }
 
-// logDone marks the last in-progress startup entry as done.
 func (m *Model) logDone() {
 	for i := len(m.startupLog) - 1; i >= 0; i-- {
 		if !m.startupLog[i].done {
@@ -350,14 +430,13 @@ func (m *Model) logDone() {
 	}
 }
 
-// logStep marks the last in-progress entry as done and adds a new in-progress entry.
 func (m *Model) logStep(text string) {
 	m.logDone()
 	m.startupLog = append(m.startupLog, startupEntry{text: text})
 }
 
 // ---------------------------------------------------------------------------
-// Model helpers (small, used across handlers/keys/view)
+// Model helpers
 // ---------------------------------------------------------------------------
 
 func (m Model) currentCard() *PRCard {
@@ -382,19 +461,10 @@ func (m *Model) navigatePR(delta int) {
 		return
 	}
 	m.current = next
-	m.bodyExpanded = false
 	m.actionStatus = ""
 	m.actionDone = false
-	m.assessmentPanel.GotoTop()
 	m.loadCurrentDiff()
-	m.rebuildAssessment()
-	if m.chatActive {
-		if card := m.currentCard(); card != nil {
-			m.chatView.SetMessages(card.chatMessages)
-			m.chatView.Streaming = false
-			m.chatView.StreamContent = ""
-		}
-	}
+	m.buildScrollback()
 }
 
 func (m *Model) loadCurrentDiff() {
@@ -409,76 +479,21 @@ func (m *Model) loadCurrentDiff() {
 	}
 }
 
-func (m *Model) assessmentHeight() int {
-	maxH := m.height * 2 / 5
-	if maxH < defaultAssessmentLines {
-		maxH = defaultAssessmentLines
+func (m *Model) buildRenderData(card *PRCard) scoring.RenderData {
+	return scoring.RenderData{
+		PR:               card.PR,
+		Assessment:       card.Assessment,
+		Score:            card.WeightedScore,
+		Verdict:          card.Verdict,
+		Scoring:          card.Scoring,
+		ScoringErr:       card.ScoringErr,
+		SpinnerView:      m.spinner.View(),
+		Criteria:         m.app.Config.Criteria,
+		BodyExpanded:     false, // no longer collapsible in conversation view
+		ScoringToolCount: card.ScoringToolCount,
+		ScoringLastTool:  card.ScoringLastTool,
+		ScoringStatus:    card.ScoringStatus,
 	}
-	contentH := m.assessmentPanel.ContentHeight() + 1 // +1 for title bar
-	if contentH < defaultAssessmentLines {
-		contentH = defaultAssessmentLines
-	}
-	if contentH > maxH {
-		return maxH
-	}
-	return contentH
-}
-
-func (m *Model) resizeDiffView() {
-	footerH := 1
-	borderH := 1
-	aH := m.assessmentHeight()
-	diffH := m.height - footerH - aH - borderH
-	if diffH < 4 {
-		diffH = 4
-	}
-	m.diffView.SetSize(m.width, diffH)
-	m.chatView.SetSize(m.width, diffH)
-	w := m.width
-	if w == 0 {
-		w = 80
-	}
-	m.assessmentPanel.SetSize(w, aH)
-}
-
-func (m *Model) rebuildAssessment() {
-	if m.current >= len(m.cards) {
-		return
-	}
-	card := m.cards[m.current]
-	m.assessmentPanel.SetContent(scoring.RenderData{
-		PR:           card.PR,
-		Assessment:   card.Assessment,
-		Score:        card.WeightedScore,
-		Verdict:      card.Verdict,
-		Scoring:      card.Scoring,
-		ScoringErr:   card.ScoringErr,
-		SpinnerView:  m.spinner.View(),
-		Criteria:     m.app.Config.Criteria,
-		BodyExpanded: m.bodyExpanded,
-	})
-	m.resizeDiffView()
-}
-
-// refreshSpinner updates only the spinner frame in the assessment panel
-// without triggering a full resize/rebuild. Called on every spinner tick.
-func (m *Model) refreshSpinner() {
-	if m.current >= len(m.cards) {
-		return
-	}
-	card := m.cards[m.current]
-	m.assessmentPanel.SetContent(scoring.RenderData{
-		PR:           card.PR,
-		Assessment:   card.Assessment,
-		Score:        card.WeightedScore,
-		Verdict:      card.Verdict,
-		Scoring:      card.Scoring,
-		ScoringErr:   card.ScoringErr,
-		SpinnerView:  m.spinner.View(),
-		Criteria:     m.app.Config.Criteria,
-		BodyExpanded: m.bodyExpanded,
-	})
-	// Intentionally skip resizeDiffView() — just update content, not layout
 }
 
 func (m *Model) cleanupWorktrees() tea.Cmd {

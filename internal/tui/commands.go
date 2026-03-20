@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -58,9 +57,10 @@ func refreshPRCmd(pr *github.PR, a *app.App) tea.Cmd {
 }
 
 // forceScorePRCmd scores a PR unconditionally, bypassing the cache.
-func forceScorePRCmd(pr *github.PR, a *app.App) tea.Cmd {
+func forceScorePRCmd(pr *github.PR, a *app.App, program *tea.Program) tea.Cmd {
 	return func() tea.Msg {
-		assessment, err := ai.AssessPR(pr, a.RepoDir, a.Config.Criteria, a.Config.Review.Model)
+		callbacks := scoringCallbacks(pr.Number, program)
+		assessment, err := ai.AssessPR(context.Background(), pr, a.RepoDir, a.Config.Criteria, a.Config.Review.Model, callbacks)
 		if err != nil {
 			return prScoredMsg{prNumber: pr.Number, err: err}
 		}
@@ -70,7 +70,7 @@ func forceScorePRCmd(pr *github.PR, a *app.App) tea.Cmd {
 	}
 }
 
-func scorePRCmd(pr *github.PR, a *app.App) tea.Cmd {
+func scorePRCmd(pr *github.PR, a *app.App, program *tea.Program) tea.Cmd {
 	return func() tea.Msg {
 		key := cache.Key(a.Repo, pr.Number, pr.Diff, reviewsText(pr), a.Config.Criteria)
 
@@ -80,12 +80,25 @@ func scorePRCmd(pr *github.PR, a *app.App) tea.Cmd {
 			return prScoredMsg{prNumber: pr.Number, assessment: &assessment, fromCache: true}
 		}
 
-		assessment, err := ai.AssessPR(pr, a.RepoDir, a.Config.Criteria, a.Config.Review.Model)
+		callbacks := scoringCallbacks(pr.Number, program)
+		assessment, err := ai.AssessPR(context.Background(), pr, a.RepoDir, a.Config.Criteria, a.Config.Review.Model, callbacks)
 		if err != nil {
 			return prScoredMsg{prNumber: pr.Number, err: err}
 		}
 		a.Cache.Set(key, *assessment)
 		return prScoredMsg{prNumber: pr.Number, assessment: assessment}
+	}
+}
+
+// scoringCallbacks wires up StreamCallbacks that send scoring progress messages to the TUI.
+func scoringCallbacks(prNumber int, program *tea.Program) ai.StreamCallbacks {
+	return ai.StreamCallbacks{
+		OnStatus: func(status string) {
+			program.Send(scoringStatusMsg{prNumber: prNumber, status: status})
+		},
+		OnToolCall: func(count int, summary string) {
+			program.Send(scoringToolCallMsg{prNumber: prNumber, count: count, lastTool: summary})
+		},
 	}
 }
 
@@ -194,9 +207,9 @@ func sendChatCmd(ctx context.Context, worktreePath string, pr *github.PR, assess
 		var mcpConfigFile string
 		binPath, binErr := os.Executable()
 		if binErr == nil && socketPath != "" {
-			mcpCfg := map[string]interface{}{
-				"mcpServers": map[string]interface{}{
-					"prx": map[string]interface{}{
+			mcpCfg := map[string]any{
+				"mcpServers": map[string]any{
+					"prx": map[string]any{
 						"command": binPath,
 						"args": []string{
 							"mcp-server",
@@ -243,174 +256,23 @@ func sendChatCmd(ctx context.Context, worktreePath string, pr *github.PR, assess
 		if model != "" {
 			args = append(args, "--model", model)
 		}
-		cmd := exec.CommandContext(ctx, "claude", args...)
-		cmd.Dir = worktreePath
 
-		stdout, err := cmd.StdoutPipe()
+		callbacks := ai.StreamCallbacks{
+			OnStatus: func(status string) {
+				program.Send(chatStatusMsg{prNumber: pr.Number, status: status})
+			},
+			OnToolCall: func(count int, summary string) {
+				program.Send(chatToolCallMsg{prNumber: pr.Number, count: count, lastTool: summary})
+			},
+			OnToken: func(delta string) {
+				program.Send(chatTokenMsg{prNumber: pr.Number, token: delta})
+			},
+		}
+
+		result, err := ai.RunClaude(ctx, args, worktreePath, callbacks)
 		if err != nil {
-			return chatDoneMsg{prNumber: pr.Number, err: fmt.Errorf("stdout pipe: %w", err)}
+			return chatDoneMsg{prNumber: pr.Number, err: err}
 		}
-		var stderrBuf strings.Builder
-		cmd.Stderr = &stderrBuf
-		if err := cmd.Start(); err != nil {
-			return chatDoneMsg{prNumber: pr.Number, err: fmt.Errorf("start claude: %w", err)}
-		}
-		var fullResponse strings.Builder
-		prevLen := 0
-		toolCallCount := 0
-		lastToolCall := ""
-		scanner := bufio.NewScanner(stdout)
-		scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
-		sentInit := false
-		for scanner.Scan() {
-			line := scanner.Text()
-			if line == "" {
-				continue
-			}
-			var event map[string]json.RawMessage
-			if err := json.Unmarshal([]byte(line), &event); err != nil {
-				logger.Debug("chat stream parse: %v", err)
-				continue
-			}
-			var eventType string
-			if raw, ok := event["type"]; ok {
-				_ = json.Unmarshal(raw, &eventType)
-			}
-			logger.Debug("chat event: %s", eventType)
-
-			switch eventType {
-			case "system":
-				if !sentInit {
-					sentInit = true
-					program.Send(chatStatusMsg{prNumber: pr.Number, status: "Thinking..."})
-				}
-			case "assistant":
-				var msg struct {
-					Message struct {
-						Content []struct {
-							Type  string                 `json:"type"`
-							Text  string                 `json:"text"`
-							Name  string                 `json:"name"`
-							Input map[string]interface{} `json:"input"`
-						} `json:"content"`
-					} `json:"message"`
-				}
-				if err := json.Unmarshal([]byte(line), &msg); err != nil {
-					continue
-				}
-				var text string
-				for _, block := range msg.Message.Content {
-					if block.Type == "text" {
-						text += block.Text
-					} else if block.Type == "tool_use" && block.Name != "" {
-						toolCallCount++
-						lastToolCall = toolSummary(block.Name, block.Input)
-						program.Send(chatToolCallMsg{prNumber: pr.Number, count: toolCallCount, lastTool: lastToolCall})
-					}
-				}
-				if text != "" {
-					fullResponse.Reset()
-					fullResponse.WriteString(text)
-					if len(text) > prevLen {
-						delta := text[prevLen:]
-						prevLen = len(text)
-						program.Send(chatTokenMsg{prNumber: pr.Number, token: delta})
-					}
-				}
-			case "result":
-				var result struct {
-					Result  string `json:"result"`
-					IsError bool   `json:"is_error"`
-				}
-				_ = json.Unmarshal([]byte(line), &result)
-				if result.IsError {
-					return chatDoneMsg{prNumber: pr.Number, err: fmt.Errorf("claude: %s", result.Result)}
-				}
-				if result.Result != "" && fullResponse.Len() == 0 {
-					fullResponse.WriteString(result.Result)
-					program.Send(chatTokenMsg{prNumber: pr.Number, token: result.Result})
-				}
-			}
-		}
-		if scanErr := scanner.Err(); scanErr != nil {
-			logger.Error("chat scanner error for PR #%d: %v", pr.Number, scanErr)
-		}
-
-		if err := cmd.Wait(); err != nil {
-			if ctx.Err() != nil {
-				return chatDoneMsg{prNumber: pr.Number, fullResponse: fullResponse.String()}
-			}
-			logger.Error("chat claude exit for PR #%d: %v\nstderr: %s", pr.Number, err, stderrBuf.String())
-			if fullResponse.Len() == 0 {
-				errMsg := stderrBuf.String()
-				if errMsg == "" {
-					errMsg = err.Error()
-				}
-				return chatDoneMsg{prNumber: pr.Number, err: fmt.Errorf("claude chat failed: %s", errMsg)}
-			}
-		}
-
-		return chatDoneMsg{prNumber: pr.Number, fullResponse: fullResponse.String()}
+		return chatDoneMsg{prNumber: pr.Number, fullResponse: result}
 	}
-}
-
-// toolSummary returns a short display string like "Read foo.py" or "Grep pattern".
-func toolSummary(name string, input map[string]interface{}) string {
-	// Translate mcp__prx__* tool names to friendly labels.
-	if strings.HasPrefix(name, "mcp__prx__") {
-		short := strings.TrimPrefix(name, "mcp__prx__")
-		switch short {
-		case "get_config":
-			return "Reading config"
-		case "set_model":
-			if m, ok := input["model"].(string); ok {
-				return "Setting model → " + m
-			}
-			return "Setting model"
-		case "set_criterion":
-			if n, ok := input["name"].(string); ok {
-				return "Updating criterion: " + n
-			}
-			return "Updating criterion"
-		case "remove_criterion":
-			if n, ok := input["name"].(string); ok {
-				return "Removing criterion: " + n
-			}
-			return "Removing criterion"
-		case "set_thresholds":
-			return "Updating thresholds"
-		case "approve_pr":
-			return "Approving PR"
-		case "request_changes":
-			return "Requesting changes"
-		case "comment_on_pr":
-			return "Posting comment"
-		case "merge_pr":
-			return "Merging PR"
-		default:
-			return strings.ReplaceAll(short, "_", " ")
-		}
-	}
-
-	if len(input) == 0 {
-		return name
-	}
-	// Pick the most informative arg for common tools.
-	for _, key := range []string{"file_path", "pattern", "command", "query", "path"} {
-		if v, ok := input[key]; ok {
-			s := fmt.Sprintf("%v", v)
-			// Use basename for file paths.
-			if key == "file_path" {
-				if i := strings.LastIndex(s, "/"); i >= 0 {
-					s = s[i+1:]
-				}
-			}
-			// Truncate long values.
-			if len(s) > 40 {
-				s = s[:37] + "..."
-			}
-			return name + " " + s
-		}
-	}
-	return name
 }

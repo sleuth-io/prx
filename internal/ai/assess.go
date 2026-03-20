@@ -1,9 +1,9 @@
 package ai
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"strings"
 
 	"github.com/sleuth-io/prx/internal/config"
@@ -93,47 +93,28 @@ The start_line is the new-file line number from the hunk header (the + number in
 	return sb.String()
 }
 
-func AssessPR(pr *github.PR, repoDir string, criteria []config.Criterion, model string) (*Assessment, error) {
+func AssessPR(ctx context.Context, pr *github.PR, repoDir string, criteria []config.Criterion, model string, callbacks StreamCallbacks) (*Assessment, error) {
 	logger.Info("assessing PR #%d: %s", pr.Number, pr.Title)
 	prompt := buildPrompt(pr, criteria)
 
 	args := []string{
 		"-p", prompt,
-		"--output-format", "json",
+		"--output-format", "stream-json",
+		"--verbose",
 		"--allowedTools", "Read,Bash,Glob",
 	}
 	if model != "" {
 		args = append(args, "--model", model)
 	}
-	cmd := exec.Command("claude", args...)
-	cmd.Dir = repoDir
 
-	out, err := cmd.Output()
+	result, err := RunClaude(ctx, args, repoDir, callbacks)
 	if err != nil {
-		var stderr string
-		if ee, ok := err.(*exec.ExitError); ok {
-			stderr = string(ee.Stderr)
-		}
-		logger.Error("claude failed for PR #%d: %v\nstderr: %s", pr.Number, err, stderr)
-		return nil, fmt.Errorf("claude assessment failed: %w\n%s", err, stderr)
+		return nil, fmt.Errorf("claude assessment failed: %w", err)
 	}
 
-	logger.Debug("claude raw output for PR #%d: %s", pr.Number, string(out))
+	logger.Debug("claude raw output for PR #%d: %s", pr.Number, result)
 
-	var envelope struct {
-		Result  string `json:"result"`
-		IsError bool   `json:"is_error"`
-	}
-	if err := json.Unmarshal(out, &envelope); err != nil {
-		logger.Error("parsing claude envelope for PR #%d: %v\nraw: %s", pr.Number, err, string(out))
-		return nil, fmt.Errorf("parsing claude output: %w", err)
-	}
-	if envelope.IsError {
-		logger.Error("claude error for PR #%d: %s", pr.Number, envelope.Result)
-		return nil, fmt.Errorf("claude returned error: %s", envelope.Result)
-	}
-
-	jsonStr := extractJSON(envelope.Result)
+	jsonStr := extractJSON(result)
 	logger.Debug("extracted JSON for PR #%d: %s", pr.Number, jsonStr)
 
 	var assessment Assessment
