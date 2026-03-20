@@ -3,11 +3,9 @@ package mcp
 import (
 	"bufio"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"net"
 	"os"
-	"strconv"
 	"strings"
 
 	"github.com/sleuth-io/prx/internal/config"
@@ -26,19 +24,6 @@ type Server struct {
 // New creates a new MCP server.
 func New(repo string, prNumber int, commitSHA, socketPath string) *Server {
 	return &Server{repo: repo, prNumber: prNumber, commitSHA: commitSHA, socketPath: socketPath}
-}
-
-// ParseAndRun parses flags from args (e.g. os.Args[2:]) and runs the server.
-func ParseAndRun(args []string) {
-	fs := flag.NewFlagSet("mcp-server", flag.ExitOnError)
-	socket := fs.String("socket", "", "Unix socket path for permission requests")
-	repo := fs.String("repo", "", "GitHub repo (owner/name)")
-	pr := fs.String("pr", "", "PR number")
-	commit := fs.String("commit", "", "Head commit SHA (required for inline comments)")
-	_ = fs.Parse(args)
-
-	prNumber, _ := strconv.Atoi(*pr)
-	New(*repo, prNumber, *commit, *socket).Run()
 }
 
 // JSON-RPC 2.0 types
