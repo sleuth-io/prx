@@ -203,6 +203,15 @@ func (s *ConversationScene) handleSlashCommand(m *Model) (Scene, tea.Cmd, bool) 
 		s.input.Reset()
 		return cmd.Run(s, m)
 	}
+
+	// Check if it matches a skill name — send as a chat message asking to activate the skill.
+	for _, sk := range m.app.Skills {
+		if sk.Name == name {
+			s.input.SetValue("Please activate the " + sk.Name + " skill and use it to help me.")
+			return s, s.sendChatMessage(m), true
+		}
+	}
+
 	return s, nil, false
 }
 

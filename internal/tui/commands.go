@@ -138,6 +138,18 @@ func requestChangesCmd(repo string, number int, body string) tea.Cmd {
 	}
 }
 
+// skillCatalog converts the app's discovered skills to the catalog format for prompts.
+func (m *Model) skillCatalog() []ai.SkillCatalog {
+	if len(m.app.Skills) == 0 {
+		return nil
+	}
+	catalog := make([]ai.SkillCatalog, len(m.app.Skills))
+	for i, s := range m.app.Skills {
+		catalog[i] = ai.SkillCatalog{Name: s.Name, Description: s.Description}
+	}
+	return catalog
+}
+
 func reviewsText(pr *github.PR) string {
 	var sb strings.Builder
 	for _, r := range pr.Reviews {
@@ -189,7 +201,7 @@ func removeWorktreeCmd(repoDir, path string) tea.Cmd {
 	}
 }
 
-func sendChatCmd(ctx context.Context, worktreePath string, pr *github.PR, assessment *ai.Assessment, messages []chat.Message, diffCtx *ai.DiffContext, model string, repo string, isOwnPR bool, socketPath string, program *tea.Program) tea.Cmd {
+func sendChatCmd(ctx context.Context, worktreePath string, pr *github.PR, assessment *ai.Assessment, messages []chat.Message, diffCtx *ai.DiffContext, model string, repo string, isOwnPR bool, socketPath string, program *tea.Program, skillCatalog []ai.SkillCatalog) tea.Cmd {
 	return func() tea.Msg {
 		history := make([]ai.ChatMessage, len(messages))
 		for i, m := range messages {
@@ -231,7 +243,7 @@ func sendChatCmd(ctx context.Context, worktreePath string, pr *github.PR, assess
 			availableActions = actionTools
 		}
 
-		prompt := ai.BuildChatPrompt(pr, assessment, history, diffCtx, availableActions)
+		prompt := ai.BuildChatPrompt(pr, assessment, history, diffCtx, availableActions, skillCatalog)
 		allTools := append([]string{"Read", "Glob", "Grep"}, mcp.ToolNames()...)
 		if len(availableActions) > 0 {
 			allTools = append(allTools, availableActions...)

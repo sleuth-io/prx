@@ -148,6 +148,16 @@ func ToolSummary(name string, input map[string]any) string {
 	if strings.HasPrefix(name, "mcp__prx__") {
 		short := strings.TrimPrefix(name, "mcp__prx__")
 		switch short {
+		case "activate_skill":
+			if n, ok := input["name"].(string); ok {
+				return "Loading skill: " + n
+			}
+			return "Loading skill"
+		case "read_skill_resource":
+			if p, ok := input["path"].(string); ok {
+				return "Reading: " + p
+			}
+			return "Reading skill resource"
 		case "get_config":
 			return "Reading config"
 		case "set_model":
@@ -178,6 +188,15 @@ func ToolSummary(name string, input map[string]any) string {
 		default:
 			return strings.ReplaceAll(short, "_", " ")
 		}
+	}
+
+	// ToolSearch is Claude's internal tool for loading deferred tool schemas.
+	// Show a friendly label instead of the raw query (e.g. "select:mcp__prx__activate_skill").
+	if name == "ToolSearch" {
+		if q, ok := input["query"].(string); ok && strings.Contains(q, "activate_skill") {
+			return "Loading skill tools"
+		}
+		return "Loading tools"
 	}
 
 	if len(input) == 0 {

@@ -19,9 +19,16 @@ type DiffContext struct {
 	Line int
 }
 
+// SkillCatalog holds the name and description of a discovered skill for prompt injection.
+type SkillCatalog struct {
+	Name        string
+	Description string
+}
+
 // BuildChatPrompt constructs the prompt for an interactive chat session about a PR.
 // availableActions lists MCP tool names (e.g. "mcp__prx__approve_pr") that Claude may call.
-func BuildChatPrompt(pr *github.PR, assessment *Assessment, history []ChatMessage, ctx *DiffContext, availableActions []string) string {
+// skillCatalog lists skills available via the activate_skill tool.
+func BuildChatPrompt(pr *github.PR, assessment *Assessment, history []ChatMessage, ctx *DiffContext, availableActions []string, skillCatalog []SkillCatalog) string {
 	var sb strings.Builder
 
 	sb.WriteString(`You are helping a code reviewer understand a pull request. You have tools to explore the codebase. Answer the reviewer's question concisely.
@@ -145,6 +152,18 @@ func BuildChatPrompt(pr *github.PR, assessment *Assessment, history []ChatMessag
 			}
 		}
 		sb.WriteString("Only use these when explicitly asked. The user will be prompted to confirm before execution.\n")
+	}
+
+	// Skills catalog
+	if len(skillCatalog) > 0 {
+		sb.WriteString("\n## Available Skills\n")
+		sb.WriteString("The following skills provide specialized instructions for specific tasks.\n")
+		sb.WriteString("When a task matches a skill's description, call the activate_skill tool\n")
+		sb.WriteString("with the skill's name to load its full instructions.\n")
+		sb.WriteString("Skills are also available as slash commands: the user can type /skill-name to activate.\n\n")
+		for _, s := range skillCatalog {
+			fmt.Fprintf(&sb, "- %s: %s\n", s.Name, s.Description)
+		}
 	}
 
 	// Final instruction

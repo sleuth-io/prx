@@ -11,6 +11,7 @@ import (
 	"github.com/sleuth-io/prx/internal/config"
 	"github.com/sleuth-io/prx/internal/github"
 	"github.com/sleuth-io/prx/internal/logger"
+	"github.com/sleuth-io/prx/internal/skills"
 )
 
 // Server is an MCP JSON-RPC server over stdin/stdout.
@@ -19,11 +20,12 @@ type Server struct {
 	prNumber   int
 	commitSHA  string
 	socketPath string
+	skills     []skills.Skill
 }
 
 // New creates a new MCP server.
-func New(repo string, prNumber int, commitSHA, socketPath string) *Server {
-	return &Server{repo: repo, prNumber: prNumber, commitSHA: commitSHA, socketPath: socketPath}
+func New(repo string, prNumber int, commitSHA, socketPath string, sk []skills.Skill) *Server {
+	return &Server{repo: repo, prNumber: prNumber, commitSHA: commitSHA, socketPath: socketPath, skills: sk}
 }
 
 // JSON-RPC 2.0 types
@@ -55,16 +57,18 @@ type toolMeta struct {
 }
 
 var toolMetas = map[string]toolMeta{
-	"approve_pr":       {requiresPermission: true, isMutation: true},
-	"request_changes":  {requiresPermission: true, isMutation: true},
-	"comment_on_pr":    {requiresPermission: true, isMutation: true},
-	"merge_pr":         {requiresPermission: true, isMutation: true},
-	"get_config":       {requiresPermission: false, isMutation: false},
-	"set_model":        {requiresPermission: true, isMutation: false},
-	"set_merge_method": {requiresPermission: true, isMutation: false},
-	"set_criterion":    {requiresPermission: true, isMutation: false},
-	"remove_criterion": {requiresPermission: true, isMutation: false},
-	"set_thresholds":   {requiresPermission: true, isMutation: false},
+	"approve_pr":          {requiresPermission: true, isMutation: true},
+	"request_changes":     {requiresPermission: true, isMutation: true},
+	"comment_on_pr":       {requiresPermission: true, isMutation: true},
+	"merge_pr":            {requiresPermission: true, isMutation: true},
+	"get_config":          {requiresPermission: false, isMutation: false},
+	"set_model":           {requiresPermission: true, isMutation: false},
+	"set_merge_method":    {requiresPermission: true, isMutation: false},
+	"set_criterion":       {requiresPermission: true, isMutation: false},
+	"remove_criterion":    {requiresPermission: true, isMutation: false},
+	"set_thresholds":      {requiresPermission: true, isMutation: false},
+	"activate_skill":      {requiresPermission: false, isMutation: false},
+	"read_skill_resource": {requiresPermission: false, isMutation: false},
 }
 
 var toolDefs = []map[string]interface{}{
@@ -226,6 +230,56 @@ func ToolNames() []string {
 	return names
 }
 
+// allToolDefs returns the static tool definitions plus a dynamic activate_skill
+// tool whose name parameter is constrained to the set of discovered skill names.
+func (s *Server) allToolDefs() []map[string]interface{} {
+	defs := make([]map[string]interface{}, len(toolDefs))
+	copy(defs, toolDefs)
+
+	if len(s.skills) > 0 {
+		names := make([]interface{}, len(s.skills))
+		for i, sk := range s.skills {
+			names[i] = sk.Name
+		}
+		defs = append(defs, map[string]interface{}{
+			"name":        "activate_skill",
+			"description": "Load the full instructions for a skill. Call this when you need specialized guidance for a task that matches a skill's description. The response lists available resource files — use read_skill_resource to load them.",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"name": map[string]interface{}{
+						"type":        "string",
+						"description": "The skill name to activate",
+						"enum":        names,
+					},
+				},
+				"required": []string{"name"},
+			},
+		})
+		defs = append(defs, map[string]interface{}{
+			"name":        "read_skill_resource",
+			"description": "Read a resource file bundled with a skill. Use this to load reference docs, scripts, or other files listed in the skill's resources.",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"skill": map[string]interface{}{
+						"type":        "string",
+						"description": "The skill name",
+						"enum":        names,
+					},
+					"path": map[string]interface{}{
+						"type":        "string",
+						"description": "Relative path to the resource file (as listed in skill_resources)",
+					},
+				},
+				"required": []string{"skill", "path"},
+			},
+		})
+	}
+
+	return defs
+}
+
 // Run reads JSON-RPC requests from stdin and writes responses to stdout.
 func (s *Server) Run() {
 	scanner := bufio.NewScanner(os.Stdin)
@@ -273,7 +327,7 @@ func (s *Server) handle(req rpcRequest) rpcResponse {
 		return rpcResponse{
 			JSONRPC: "2.0",
 			ID:      req.ID,
-			Result:  map[string]interface{}{"tools": toolDefs},
+			Result:  map[string]interface{}{"tools": s.allToolDefs()},
 		}
 	case "tools/call":
 		var params struct {
@@ -416,11 +470,57 @@ func (s *Server) executeAction(name string, args map[string]interface{}) (string
 			return "", err
 		}
 		return "PR merged successfully", nil
+	case "activate_skill":
+		return s.executeActivateSkill(args)
+	case "read_skill_resource":
+		return s.executeReadSkillResource(args)
 	case "get_config", "set_model", "set_merge_method", "set_criterion", "remove_criterion", "set_thresholds":
 		return s.executeConfigAction(name, args)
 	default:
 		return "", fmt.Errorf("unknown tool: %s", name)
 	}
+}
+
+func (s *Server) executeActivateSkill(args map[string]interface{}) (string, error) {
+	name, _ := args["name"].(string)
+	if name == "" {
+		return "", fmt.Errorf("name is required")
+	}
+	for _, sk := range s.skills {
+		if sk.Name == name {
+			var sb strings.Builder
+			fmt.Fprintf(&sb, "<skill_content name=%q>\n", sk.Name)
+			sb.WriteString(sk.Body)
+			if sk.Source != "built-in" {
+				fmt.Fprintf(&sb, "\n\nSkill directory: %s/%s", sk.Source, sk.Name)
+			}
+			if len(sk.Resources) > 0 {
+				sb.WriteString("\n\n<skill_resources>\n")
+				for _, r := range sk.Resources {
+					fmt.Fprintf(&sb, "  <file>%s</file>\n", r)
+				}
+				sb.WriteString("</skill_resources>")
+				sb.WriteString("\nUse read_skill_resource to load any of these files.")
+			}
+			sb.WriteString("\n</skill_content>")
+			return sb.String(), nil
+		}
+	}
+	return "", fmt.Errorf("unknown skill: %s", name)
+}
+
+func (s *Server) executeReadSkillResource(args map[string]interface{}) (string, error) {
+	skillName, _ := args["skill"].(string)
+	path, _ := args["path"].(string)
+	if skillName == "" || path == "" {
+		return "", fmt.Errorf("skill and path are required")
+	}
+	for _, sk := range s.skills {
+		if sk.Name == skillName {
+			return sk.ReadResource(path)
+		}
+	}
+	return "", fmt.Errorf("unknown skill: %s", skillName)
 }
 
 func (s *Server) executeConfigAction(name string, args map[string]interface{}) (string, error) {

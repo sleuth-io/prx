@@ -230,7 +230,7 @@ func (m *Model) startChatCmd(card *PRCard) tea.Cmd {
 	card.Chat.Cancel = cancel
 	return sendChatCmd(ctx, card.Chat.WorktreePath, card.PR, card.Assessment, card.Chat.Messages,
 		nil, m.app.Config.Review.Model, m.app.Repo, m.isOwnPR(card),
-		m.permSocketPath, m.program)
+		m.permSocketPath, m.program, m.skillCatalog())
 }
 
 // hardReset cancels all in-flight work, clears cache, and restarts from scratch.

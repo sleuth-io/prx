@@ -8,6 +8,7 @@ import (
 	"github.com/sleuth-io/prx/internal/config"
 	"github.com/sleuth-io/prx/internal/github"
 	"github.com/sleuth-io/prx/internal/logger"
+	"github.com/sleuth-io/prx/internal/skills"
 )
 
 // App holds all shared application context.
@@ -17,6 +18,7 @@ type App struct {
 	CurrentUser string
 	Config      config.Config
 	Cache       *cache.Cache
+	Skills      []skills.Skill
 }
 
 func New(repoDir string) (*App, error) {
@@ -72,11 +74,15 @@ func New(repoDir string) (*App, error) {
 
 	logger.Info("repo: %s  dir: %s  user: %s", repo, repoDir, user)
 
+	discovered := skills.Discover()
+	logger.Info("skills: discovered %d skills", len(discovered))
+
 	return &App{
 		Repo:        repo,
 		RepoDir:     repoDir,
 		CurrentUser: user,
 		Config:      cfg,
 		Cache:       cache.Load(),
+		Skills:      discovered,
 	}, nil
 }

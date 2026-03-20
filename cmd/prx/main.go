@@ -12,6 +12,7 @@ import (
 	"github.com/sleuth-io/prx/internal/buildinfo"
 	"github.com/sleuth-io/prx/internal/logger"
 	"github.com/sleuth-io/prx/internal/mcp"
+	"github.com/sleuth-io/prx/internal/skills"
 	"github.com/sleuth-io/prx/internal/tui"
 )
 
@@ -69,7 +70,7 @@ func main() {
 			commit, _ := cmd.Flags().GetString("commit")
 
 			prNumber, _ := strconv.Atoi(pr)
-			mcp.New(repo, prNumber, commit, socket).Run()
+			mcp.New(repo, prNumber, commit, socket, skills.Discover()).Run()
 			return nil
 		},
 	}

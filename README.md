@@ -23,19 +23,29 @@ prx is a terminal UI that helps you prioritize code review. It uses AI to score 
 - Per-hunk annotations - trivial hunks auto-collapse so you see only what needs your brain
 - Inline comments, review history, and CI status
 
-**From the TUI you can:**
-- Approve, request changes, or merge PRs (with confirmation)
-- Add comments (global or inline on specific lines)
-- Navigate between PRs, files, and hunks with keyboard shortcuts
-
-**Chat with Claude in context (`?`):**
+**Chat-first interface:**
+- The primary interface is a conversation — PR assessment is scrollback, actions are chat
 - Ask questions about the code, the PR, or the risk assessment
 - Take PR actions by asking ("approve this", "request changes", "add a comment saying...")
 - Tune the scoring to your team: "treat test-only changes as low blast radius" or "I don't care about novelty for this repo" — Claude updates its criteria on the fly
+- Slash commands for quick actions: `/approve`, `/merge`, `/diff`, `/bulk`
+
+**Diff overlay (`ctrl+d`):**
+- Full-screen diff with per-hunk risk annotations
+- Navigate files (`]/[`), hunks (`}/{`), collapse/expand (`left/right`)
+- Add inline or global comments (`c`), quote code into chat (`?`)
+
+**Bulk approve (`/bulk`):**
+- Approve multiple low-risk PRs in one pass
+
+**Skills — self-aware help & extensibility:**
+- Ask "how do I configure scoring?" or "what shortcuts are available?" — Claude loads the built-in user guide skill and answers from it
+- Type `/user-guide` in chat to activate the built-in skill directly
+- Add your own skills in `~/.config/prx/skills/` — each skill is a directory with a `SKILL.md` (YAML frontmatter for name + description, markdown body for instructions)
 
 **Coming next: Personalized automated actions**
 - Auto-approve trivial PRs
-- Set up your own scoring criteria and automate from that 
+- Set up your own scoring criteria and automate from that
 - Customize auto-merge rules
 
 ## Install
@@ -73,29 +83,41 @@ prx /path/to/repo
 
 ### Keyboard shortcuts
 
+**Conversation (primary screen):**
+
+| Key           | Action |
+|---------------|--------|
+| `enter`       | Send chat message or run slash command |
+| `esc`         | Cancel streaming response / clear input |
+| `ctrl+d`      | Open diff overlay |
+| `ctrl+n`      | Next PR |
+| `ctrl+p`      | Previous PR |
+| `ctrl+r`      | Refresh PR data |
+| `ctrl+q`      | Quit |
+
+**Diff overlay (`ctrl+d`):**
+
 | Key                 | Action |
 |---------------------|--------|
-| `tab`               | Cycle between panels |
-| `j/k/up/down`       | Scroll up/down |
-| `n/p`               | Next/previous PR |
+| `j/k/up/down`       | Scroll |
 | `]/[`               | Next/previous file |
 | `}/{`               | Next/previous hunk |
 | `left/right`        | Collapse/expand current item |
 | `shift+left` / `<`  | Collapse all items |
 | `shift+right` / `>` | Expand all items |
-| `a`                 | Approve PR |
-| `m`                 | Merge PR (own PRs) |
-| `r`                 | Request changes |
+| `?`                 | Quote code into chat |
 | `c`                 | Comment (global or inline) |
-| `?`                 | Open AI chat |
-| `ctrl+b`            | Bulk approve screen |
-| `ctrl+r`            | Refresh PR data |
-| `q`                 | Quit |
+| `q` / `esc`         | Return to conversation |
+
+**Slash commands** — type in the input bar:
+
+`/approve` `/merge` `/reject` `/comment` `/diff` `/bulk` `/next` `/prev` `/refresh` `/quit`
 
 ### Bulk approve
 
-Press `ctrl+b` to open the bulk approve screen. prx lists all PRs below your configured `approve_below` risk threshold and asks you to confirm before approving. This lets you clear a queue of trivial PRs in one pass before focusing on the ones that need real attention.
+Type `/bulk` to open the bulk approve screen. prx lists all PRs below your configured `approve_below` risk threshold and lets you select which to approve. This lets you clear a queue of trivial PRs in one pass before focusing on the ones that need real attention.
 
+For the full reference — all shortcuts, scoring details, configuration format, and custom skills — see the [User Guide](internal/skills/builtins/user-guide/reference/guide.md). This guide is also available in-app: type `/user-guide` in the chat or ask "how do I configure scoring?"
 
 ## License
 

@@ -422,7 +422,7 @@ func (m *Model) handleChatWorktreeReady(msg chatWorktreeReadyMsg) (Model, tea.Cm
 			m.buildScrollback()
 			return *m, sendChatCmd(ctx, msg.path, card.PR, card.Assessment, card.Chat.Messages,
 				nil, m.app.Config.Review.Model, m.app.Repo, m.isOwnPR(card),
-				m.permSocketPath, m.program)
+				m.permSocketPath, m.program, m.skillCatalog())
 		}
 	}
 	m.buildScrollback()
