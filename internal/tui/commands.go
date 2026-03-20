@@ -92,14 +92,14 @@ func scorePRCmd(pr *github.PR, a *app.App) tea.Cmd {
 func mergeCmd(repo string, number int, method string) tea.Cmd {
 	return func() tea.Msg {
 		err := github.MergePR(repo, number, method)
-		return actionDoneMsg{pr: number, action: "merge", err: err}
+		return actionDoneMsg{pr: number, action: actionMerge, err: err}
 	}
 }
 
 func approveCmd(repo string, number int) tea.Cmd {
 	return func() tea.Msg {
 		err := github.ApprovePR(repo, number)
-		return actionDoneMsg{pr: number, action: "approve", err: err}
+		return actionDoneMsg{pr: number, action: actionApprove, err: err}
 	}
 }
 
@@ -121,7 +121,7 @@ func postInlineCommentCmd(repo string, prNumber int, sha, path string, line int,
 func requestChangesCmd(repo string, number int, body string) tea.Cmd {
 	return func() tea.Msg {
 		err := github.RequestChanges(repo, number, body)
-		return actionDoneMsg{pr: number, action: "request-changes", err: err}
+		return actionDoneMsg{pr: number, action: actionRequestChanges, err: err}
 	}
 }
 

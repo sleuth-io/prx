@@ -95,6 +95,7 @@ func (m *Model) handleConfirmKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	case "y":
 		cmd := m.confirm.cmd
 		m.actionStatus = m.confirm.actionStatus
+		m.actionDone = false
 		m.confirm = nil
 		return *m, cmd
 	case "n", "esc":
@@ -151,6 +152,7 @@ func (m *Model) handleGlobalKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 	case "ctrl+r":
 		if card := m.currentCard(); card != nil {
 			m.actionStatus = "Refreshing\u2026"
+			m.actionDone = false
 			return *m, tea.Batch(refreshPRCmd(card.PR, m.app), fetchPRListCmd(m.app.Repo)), true
 		}
 		return *m, nil, true
@@ -209,6 +211,7 @@ func (m *Model) hardReset() tea.Cmd {
 	m.scoring = 0
 	m.current = 0
 	m.actionStatus = ""
+	m.actionDone = false
 	m.chatActive = false
 	m.focus = focusAssessment
 	m.diffView.Focused = false
@@ -250,6 +253,7 @@ func (m *Model) handleAssessmentKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		if card := m.currentCard(); card != nil && !card.Scoring && m.isOwnPR(card) {
 			if reason := card.PR.MergeBlockReason(); reason != "" {
 				m.actionStatus = fmt.Sprintf("Cannot merge: %s", reason)
+				m.actionDone = true
 				return *m, nil
 			}
 			repo, num := m.app.Repo, card.PR.Number

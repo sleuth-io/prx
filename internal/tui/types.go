@@ -91,6 +91,12 @@ type prScoredMsg struct {
 	fromCache  bool
 }
 
+const (
+	actionMerge          = "merge"
+	actionApprove        = "approve"
+	actionRequestChanges = "request-changes"
+)
+
 type actionDoneMsg struct {
 	pr     int
 	action string

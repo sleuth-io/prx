@@ -41,6 +41,7 @@ type Model struct {
 	modal            commentModal
 	confirm          *confirmDialog
 	actionStatus     string // e.g. "Merging…", "Approving…"
+	actionDone       bool   // true when actionStatus is a final result (no spinner)
 	bodyExpanded     bool
 	program          *tea.Program
 	err              error
@@ -51,6 +52,13 @@ type Model struct {
 	pendingPerm      *permRequestMsg
 	bulkApprove      bulkapprove.Model
 	bulkApproveShown bool // true once auto-shown this session
+	startupDone      bool // true once first PR is scored and ready to view
+	startupLog       []startupEntry
+}
+
+type startupEntry struct {
+	text string
+	done bool // true = completed (shown with checkmark), false = in-progress (shown with spinner)
 }
 
 func New(a *app.App) Model {
@@ -63,6 +71,10 @@ func New(a *app.App) Model {
 		diffView:        diff.NewDiffView(80, 20),
 		chatView:        chat.New(80, 20),
 		assessmentPanel: scoring.New(80, defaultAssessmentLines),
+		startupLog: []startupEntry{
+			{text: fmt.Sprintf("Signed in as %s", a.CurrentUser), done: true},
+			{text: fmt.Sprintf("Fetching open PRs from %s", a.Repo)},
+		},
 	}
 }
 
@@ -107,17 +119,8 @@ func (m Model) View() string {
 		return m.bulkApprove.View()
 	}
 
-	if len(m.cards) == 0 {
-		if m.fetching == 0 && m.total == 0 {
-			return fmt.Sprintf("\n  %s Fetching PRs for %s...\n\n  Press q to quit.\n",
-				m.spinner.View(), m.app.Repo)
-		}
-		if m.fetching > 0 {
-			fetched := m.total - m.fetching
-			return fmt.Sprintf("\n  %s Loading PRs (%d/%d)...\n\n  Press q to quit.\n",
-				m.spinner.View(), fetched, m.total)
-		}
-		return "\n  No open PRs found.\n\n  Press q to quit.\n"
+	if !m.startupDone {
+		return m.renderStartupLog()
 	}
 
 	width := m.width
@@ -261,7 +264,9 @@ func (m Model) renderFooter() string {
 		width = 80
 	}
 	status := fmt.Sprintf("prx  PR %d/%d", m.current+1, len(m.cards))
-	if m.actionStatus != "" {
+	if m.actionStatus != "" && m.actionDone {
+		status += fmt.Sprintf("  %s", m.actionStatus)
+	} else if m.actionStatus != "" {
 		status += fmt.Sprintf("  %s %s", m.spinner.View(), m.actionStatus)
 	} else if pending := m.fetching + m.scoring; pending > 0 {
 		status += fmt.Sprintf("  %s %d loading", m.spinner.View(), pending)
@@ -280,6 +285,75 @@ func (m Model) renderFooter() string {
 	}
 	line := status + strings.Repeat(" ", gap) + hints
 	return footerStyle.Width(width).Render(line)
+}
+
+// ---------------------------------------------------------------------------
+// Startup log rendering & helpers
+// ---------------------------------------------------------------------------
+
+var (
+	startupTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("75"))
+	startupDoneStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("242"))
+	startupCheckStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
+)
+
+func (m Model) renderStartupLog() string {
+	var b strings.Builder
+	width := m.width
+	if width == 0 {
+		width = 80
+	}
+	title := " prx "
+	lineStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("237"))
+	pad := (width - len(title)) / 2
+	if pad < 2 {
+		pad = 2
+	}
+	line := lineStyle.Render(strings.Repeat("─", pad)) + startupTitleStyle.Render(title) + lineStyle.Render(strings.Repeat("─", width-pad-len(title)))
+	b.WriteString("\n" + line + "\n\n")
+
+	// Show at most the last 12 entries to avoid scrolling off screen.
+	entries := m.startupLog
+	maxVisible := 12
+	start := 0
+	if len(entries) > maxVisible {
+		start = len(entries) - maxVisible
+	}
+	for i := start; i < len(entries); i++ {
+		entry := entries[i]
+		if entry.done {
+			b.WriteString(fmt.Sprintf("  %s %s\n",
+				startupCheckStyle.Render("✓"),
+				startupDoneStyle.Render(entry.text)))
+		} else {
+			b.WriteString(fmt.Sprintf("  %s %s\n", m.spinner.View(), entry.text))
+		}
+	}
+	b.WriteString("\n  Press q to quit.\n")
+	return b.String()
+}
+
+func truncate(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max-1] + "…"
+}
+
+// logDone marks the last in-progress startup entry as done.
+func (m *Model) logDone() {
+	for i := len(m.startupLog) - 1; i >= 0; i-- {
+		if !m.startupLog[i].done {
+			m.startupLog[i].done = true
+			return
+		}
+	}
+}
+
+// logStep marks the last in-progress entry as done and adds a new in-progress entry.
+func (m *Model) logStep(text string) {
+	m.logDone()
+	m.startupLog = append(m.startupLog, startupEntry{text: text})
 }
 
 // ---------------------------------------------------------------------------
@@ -310,6 +384,7 @@ func (m *Model) navigatePR(delta int) {
 	m.current = next
 	m.bodyExpanded = false
 	m.actionStatus = ""
+	m.actionDone = false
 	m.assessmentPanel.GotoTop()
 	m.loadCurrentDiff()
 	m.rebuildAssessment()

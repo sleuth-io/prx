@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/sleuth-io/prx/internal/cache"
 	"github.com/sleuth-io/prx/internal/config"
 	"github.com/sleuth-io/prx/internal/github"
 	"github.com/sleuth-io/prx/internal/logger"
@@ -172,8 +173,13 @@ func (m *Model) handlePRList(msg prListFetchedMsg) (Model, tea.Cmd) {
 		m.fetching += len(newRaws)
 	}
 	if len(newRaws) == 0 {
+		m.logDone()
+		if len(msg.rawPRs) == 0 {
+			m.startupLog = append(m.startupLog, startupEntry{text: "No open PRs found", done: true})
+		}
 		return *m, nil
 	}
+	m.logStep(fmt.Sprintf("Found %d open PRs, loading details", len(msg.rawPRs)))
 	cmds := make([]tea.Cmd, len(newRaws))
 	for i, raw := range newRaws {
 		cmds[i] = fetchPRDetailsCmd(raw, m.app)
@@ -188,6 +194,17 @@ func (m *Model) handlePRDetails(msg prDetailsFetchedMsg) (Model, tea.Cmd) {
 		return *m, nil
 	}
 	pr := msg.pr
+	if !m.startupDone {
+		fetched := m.total - m.fetching
+		cached := ""
+		key := cache.Key(m.app.Repo, pr.Number, pr.Diff, reviewsText(pr), m.app.Config.Criteria)
+		if _, ok := m.app.Cache.Get(key); ok {
+			cached = " (cached)"
+		} else {
+			cached = " (needs scoring)"
+		}
+		m.logStep(fmt.Sprintf("Loaded PR #%d: %s%s (%d/%d)", pr.Number, truncate(pr.Title, 40), cached, fetched, m.total))
+	}
 	card := &PRCard{PR: pr, Scoring: true}
 	// Insert sorted by PR number descending (newest first).
 	idx := 0
@@ -197,7 +214,7 @@ func (m *Model) handlePRDetails(msg prDetailsFetchedMsg) (Model, tea.Cmd) {
 	m.cards = append(m.cards, nil)
 	copy(m.cards[idx+1:], m.cards[idx:])
 	m.cards[idx] = card
-	if idx <= m.current && len(m.cards) > 1 {
+	if m.fetching == 0 && idx <= m.current && len(m.cards) > 1 {
 		m.current++
 	}
 	m.scoring++
@@ -223,8 +240,10 @@ func (m *Model) handleDiffParsed(msg prDiffParsedMsg) (Model, tea.Cmd) {
 
 func (m *Model) handlePRScored(msg prScoredMsg) (Model, tea.Cmd) {
 	m.scoring--
+	var scoredCard *PRCard
 	for _, card := range m.cards {
 		if card.PR.Number == msg.prNumber {
+			scoredCard = card
 			card.Scoring = false
 			if msg.err != nil {
 				card.ScoringErr = msg.err
@@ -239,8 +258,17 @@ func (m *Model) handlePRScored(msg prScoredMsg) (Model, tea.Cmd) {
 				src = "cache"
 			}
 			logger.Info("PR #%d scored via %s: %.1f", msg.prNumber, src, card.WeightedScore)
+			if !m.startupDone {
+				label := fmt.Sprintf("Scored PR #%d: %s (%s, %.1f)", msg.prNumber, truncate(card.PR.Title, 40), src, card.WeightedScore)
+				m.logStep(label)
+			}
 			break
 		}
+	}
+	// Transition from startup screen once the first PR is scored (or errored).
+	if !m.startupDone && scoredCard != nil && !scoredCard.Scoring {
+		m.logDone()
+		m.startupDone = true
 	}
 	if card := m.currentCard(); card != nil && card.PR.Number == msg.prNumber {
 		m.rebuildAssessment()
@@ -255,21 +283,32 @@ func (m *Model) handlePRScored(msg prScoredMsg) (Model, tea.Cmd) {
 }
 
 func (m *Model) handleActionDone(msg actionDoneMsg) (Model, tea.Cmd) {
+	m.actionDone = true
 	if msg.err != nil {
 		m.actionStatus = fmt.Sprintf("%s failed: %s", msg.action, msg.err)
 		return *m, nil
 	}
-	m.actionStatus = ""
-	if m.current < len(m.cards)-1 {
-		m.current++
-		m.loadCurrentDiff()
-		m.rebuildAssessment()
+	switch msg.action {
+	case actionMerge:
+		m.actionStatus = fmt.Sprintf("Merged PR #%d", msg.pr)
+		if card := m.currentCard(); card != nil && card.PR.Number == msg.pr {
+			card.PR.State = "MERGED"
+			m.rebuildAssessment()
+		}
+	case actionApprove:
+		m.actionStatus = fmt.Sprintf("Approved PR #%d", msg.pr)
+	case actionRequestChanges:
+		m.actionStatus = fmt.Sprintf("Requested changes on PR #%d", msg.pr)
+	default:
+		m.actionStatus = fmt.Sprintf("%s done", msg.action)
 	}
 	return *m, nil
 }
 
 func (m *Model) handlePRRefreshed(msg prRefreshedMsg) (Model, tea.Cmd) {
-	m.actionStatus = ""
+	if !m.actionDone {
+		m.actionStatus = ""
+	}
 	if msg.err != nil {
 		logger.Error("refresh PR: %v", msg.err)
 		return *m, nil

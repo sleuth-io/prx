@@ -60,6 +60,12 @@ func (pr *PR) HasPendingChecks() bool {
 // or empty string if it is safe to proceed with merge.
 // BEHIND is allowed (GitHub can auto-merge); DIRTY/BLOCKED/UNSTABLE are hard blocks.
 func (pr *PR) MergeBlockReason() string {
+	if pr.State == "MERGED" {
+		return "PR is already merged"
+	}
+	if pr.State == "CLOSED" {
+		return "PR is closed"
+	}
 	if pr.HasFailingChecks() {
 		return "checks are failing"
 	}
