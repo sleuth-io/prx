@@ -24,10 +24,14 @@ prx is a terminal UI that helps you prioritize code review. It uses AI to score 
 - Inline comments, review history, and CI status
 
 **From the TUI you can:**
-- Approve, request changes, or merge PRs
+- Approve, request changes, or merge PRs (with confirmation)
 - Add comments (global or inline on specific lines)
-- Chat with Claude about the code in context
 - Navigate between PRs, files, and hunks with keyboard shortcuts
+
+**Chat with Claude in context (`?`):**
+- Ask questions about the code, the PR, or the risk assessment
+- Take PR actions by asking ("approve this", "request changes", "add a comment saying...")
+- Tune the scoring to your team: "treat test-only changes as low blast radius" or "I don't care about novelty for this repo" — Claude updates its criteria on the fly
 
 **Coming next: Personalized automated actions**
 - Auto-approve trivial PRs
@@ -69,20 +73,28 @@ prx /path/to/repo
 
 ### Keyboard shortcuts
 
-| Key             | Action |
-|-----------------|--------|
-| `tab`           | Cycle between panels |
-| `j/k/up/down`   | Scroll up/down |
-| `n/p`           | Next/previous PR |
-| `]/[`           | Next/previous file |
-| `}/{`           | Next/previous hunk |
-| `left/right` | Collapse/expand |
-| `a`             | Approve PR |
-| `m`             | Merge PR (own PRs) |
-| `r`             | Request changes |
-| `c`             | Comment (global or inline) |
-| `?`             | Open AI chat |
-| `q`             | Quit |
+| Key                 | Action |
+|---------------------|--------|
+| `tab`               | Cycle between panels |
+| `j/k/up/down`       | Scroll up/down |
+| `n/p`               | Next/previous PR |
+| `]/[`               | Next/previous file |
+| `}/{`               | Next/previous hunk |
+| `left/right`        | Collapse/expand current item |
+| `shift+left` / `<`  | Collapse all items |
+| `shift+right` / `>` | Expand all items |
+| `a`                 | Approve PR |
+| `m`                 | Merge PR (own PRs) |
+| `r`                 | Request changes |
+| `c`                 | Comment (global or inline) |
+| `?`                 | Open AI chat |
+| `ctrl+b`            | Bulk approve screen |
+| `ctrl+r`            | Refresh PR data |
+| `q`                 | Quit |
+
+### Bulk approve
+
+Press `ctrl+b` to open the bulk approve screen. prx lists all PRs below your configured `approve_below` risk threshold and asks you to confirm before approving. This lets you clear a queue of trivial PRs in one pass before focusing on the ones that need real attention.
 
 
 ## License
