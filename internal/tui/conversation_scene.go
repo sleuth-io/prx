@@ -76,11 +76,31 @@ func (s *ConversationScene) View(m *Model) string {
 	vpContent := lipgloss.JoinHorizontal(lipgloss.Top, s.viewport.View(), style.RenderScrollbar(s.viewport))
 
 	// Claude Code-style input area with horizontal rules
-	ruleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("237"))
+	ruleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#0891b2"))
 	rule := ruleStyle.Render(strings.Repeat("─", width))
-	promptStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Bold(true)
+
+	// Top rule with PR info right-aligned (max 30% of width)
+	topRule := rule
+	if card := m.currentCard(); card != nil && card.PR != nil {
+		prLabel := fmt.Sprintf("#%d - %s", card.PR.Number, card.PR.Title)
+		maxLen := width * 3 / 10
+		if len(prLabel) > maxLen {
+			prLabel = prLabel[:maxLen-1] + "…"
+		}
+		blueRule := lipgloss.NewStyle().Foreground(lipgloss.Color("#0891b2"))
+		titleStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#000000")).
+			Background(lipgloss.Color("#0891b2"))
+		label := blueRule.Render(" ") + titleStyle.Render(" "+prLabel+" ") + blueRule.Render(" ──")
+		fillLen := width - lipgloss.Width(label)
+		if fillLen > 0 {
+			topRule = blueRule.Render(strings.Repeat("─", fillLen)) + label
+		}
+	}
+
+	promptStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
 	inputLine := promptStyle.Render("❯ ") + s.input.View()
-	inputArea := lipgloss.JoinVertical(lipgloss.Left, rule, inputLine, rule)
+	inputArea := lipgloss.JoinVertical(lipgloss.Left, topRule, inputLine, rule)
 
 	parts := []string{vpContent, inputArea}
 	if s.confirm != nil {
