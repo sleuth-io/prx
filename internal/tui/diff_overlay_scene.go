@@ -75,7 +75,7 @@ func (s *DiffOverlayScene) Resize(width, height int) {
 
 func (s *DiffOverlayScene) handleKey(msg tea.KeyMsg, m *Model) (Scene, tea.Cmd) {
 	switch msg.String() {
-	case "q", "esc":
+	case "q", "esc", "ctrl+d":
 		// Return to conversation scene
 		m.diffView.Focused = false
 		s.conv.Resize(s.width, s.height)
