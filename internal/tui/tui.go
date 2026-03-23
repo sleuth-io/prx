@@ -224,7 +224,6 @@ func (m *Model) buildRenderData(card *PRCard) scoring.RenderData {
 		ScoringErr:       card.ScoringErr,
 		SpinnerView:      m.spinner.View(),
 		Criteria:         m.app.Config.Criteria,
-		BodyExpanded:     false,
 		ScoringToolCount: card.ScoringToolCount,
 		ScoringLastTool:  card.ScoringLastTool,
 		ScoringStatus:    card.ScoringStatus,

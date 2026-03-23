@@ -39,7 +39,6 @@ type RenderData struct {
 	ScoringErr       error
 	SpinnerView      string
 	Criteria         []config.Criterion
-	BodyExpanded     bool
 	ScoringToolCount int
 	ScoringLastTool  string
 	ScoringStatus    string
@@ -131,13 +130,7 @@ func buildContent(data RenderData, vpWidth int) string {
 	reviews := "  " + renderReviewStatus(pr)
 	checks := "  " + renderChecksStatus(pr)
 
-	prBody := strings.ReplaceAll(pr.Body, "\r\n", "\n")
-	var bodyLine string
-	if data.BodyExpanded {
-		bodyLine = style.DimStyle.Render("  Description") + style.CollapseHint.Render("  [\u2190 collapse]")
-	} else {
-		bodyLine = style.DimStyle.Render("  Description") + style.CollapseHint.Render("  [\u2192 expand]")
-	}
+	prBody := strings.TrimSpace(strings.ReplaceAll(pr.Body, "\r\n", "\n"))
 
 	var riskLine string
 	if data.Scoring {
@@ -208,11 +201,8 @@ func buildContent(data RenderData, vpWidth int) string {
 		cols = lipgloss.JoinVertical(lipgloss.Left, title, twoCol)
 	}
 
-	if bodyLine != "" {
-		cols = lipgloss.JoinVertical(lipgloss.Left, cols, bodyLine)
-	}
-	if data.BodyExpanded && prBody != "" {
-		rendered := lipgloss.NewStyle().Foreground(lipgloss.Color("243")).Width(w - 4).Render("  " + strings.TrimSpace(prBody))
+	if prBody != "" {
+		rendered := lipgloss.NewStyle().Foreground(lipgloss.Color("243")).Width(w - 4).Render("  " + prBody)
 		cols = lipgloss.JoinVertical(lipgloss.Left, cols, rendered)
 	}
 

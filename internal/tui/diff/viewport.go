@@ -79,6 +79,7 @@ func (d *DiffView) rebuildViewport() {
 	}
 	inlineByLine := map[fileLineKey][]*CommentItem{}
 	inlineByFile := map[string][]*CommentItem{}
+	rendered := map[*CommentItem]bool{}
 	for _, c := range d.inline {
 		if c.LineNum > 0 {
 			inlineByLine[fileLineKey{c.Path, c.LineNum}] = append(inlineByLine[fileLineKey{c.Path, c.LineNum}], c)
@@ -170,6 +171,7 @@ func (d *DiffView) rebuildViewport() {
 							if lineNum > 0 {
 								key := fileLineKey{f.Name, lineNum}
 								for _, ic := range inlineByLine[key] {
+									rendered[ic] = true
 									lines = append(lines, "")
 									d.collapsibles = append(d.collapsibles, collapsible{
 										lineIdx: len(lines),
@@ -183,11 +185,12 @@ func (d *DiffView) rebuildViewport() {
 					}
 				}
 
-				// Comments that couldn't be placed at a specific line (line == 0)
+				// Comments that couldn't be placed at a specific diff line
 				for _, c := range inlineByFile[f.Name] {
-					if c.LineNum > 0 {
+					if rendered[c] {
 						continue // already rendered inline
 					}
+					rendered[c] = true
 					lines = append(lines, "")
 					d.collapsibles = append(d.collapsibles, collapsible{
 						lineIdx: len(lines),

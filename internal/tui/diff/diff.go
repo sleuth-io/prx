@@ -158,6 +158,7 @@ func (d *DiffView) SetParsedContent(files []*File, pr *github.PR) {
 			Collapsed: true,
 		})
 	}
+
 	d.cursorLine = 0
 	d.rebuildViewport()
 	d.viewport.GotoTop()
