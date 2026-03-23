@@ -26,7 +26,7 @@ test: ## Run tests
 	@go test ./...
 
 lint: ## Run linter
-	@golangci-lint run
+	@go tool golangci-lint run
 
 format: ## Format code
 	@gofmt -s -w .

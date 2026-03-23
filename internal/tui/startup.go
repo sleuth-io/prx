@@ -42,11 +42,11 @@ func (m Model) renderStartupLog() string {
 	for i := start; i < len(entries); i++ {
 		entry := entries[i]
 		if entry.done {
-			b.WriteString(fmt.Sprintf("  %s %s\n",
+			fmt.Fprintf(&b, "  %s %s\n",
 				startupCheckStyle.Render("✓"),
-				startupDoneStyle.Render(entry.text)))
+				startupDoneStyle.Render(entry.text))
 		} else {
-			b.WriteString(fmt.Sprintf("  %s %s\n", m.spinner.View(), entry.text))
+			fmt.Fprintf(&b, "  %s %s\n", m.spinner.View(), entry.text)
 		}
 	}
 	if m.noPRs {
