@@ -15,6 +15,7 @@ import (
 
 	"github.com/sleuth-io/prx/internal/ai"
 	"github.com/sleuth-io/prx/internal/app"
+	"github.com/sleuth-io/prx/internal/imgrender"
 	"github.com/sleuth-io/prx/internal/logger"
 	"github.com/sleuth-io/prx/internal/mcp"
 	"github.com/sleuth-io/prx/internal/tui/bulkapprove"
@@ -58,6 +59,9 @@ type Model struct {
 	// Diff view: shared state loaded by Model, rendered by DiffOverlayScene
 	diffView diff.DiffView
 
+	// Image rendering cache (sixel/kitty/iTerm2)
+	imageCache *imgrender.Cache
+
 	// Bulk approve
 	bulkApproveShown bool // true once auto-shown this session
 
@@ -74,12 +78,18 @@ func New(a *app.App) Model {
 
 	cs := newConversationScene()
 
+	var imgCache *imgrender.Cache
+	if imgrender.Supported() {
+		imgCache = imgrender.NewCache(60, 6) // 60 cols wide, 6 rows tall thumbnail
+	}
+
 	return Model{
-		app:       a,
-		spinner:   s,
-		scene:     cs,
-		convScene: cs,
-		diffView:  diff.NewDiffView(80, 20),
+		app:        a,
+		spinner:    s,
+		scene:      cs,
+		convScene:  cs,
+		diffView:   diff.NewDiffView(80, 20),
+		imageCache: imgCache,
 		startupLog: []startupEntry{
 			{text: fmt.Sprintf("Signed in as %s", a.CurrentUser), done: true},
 			{text: fmt.Sprintf("Fetching open PRs from %s", a.Repo)},
@@ -228,6 +238,7 @@ func (m *Model) buildRenderData(card *PRCard) scoring.RenderData {
 		ScoringLastTool:  card.ScoringLastTool,
 		ScoringStatus:    card.ScoringStatus,
 		ParsedFiles:      card.parsedFiles,
+		ImageCache:       m.imageCache,
 	}
 }
 

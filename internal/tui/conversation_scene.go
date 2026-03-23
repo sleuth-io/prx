@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/sleuth-io/prx/internal/logger"
 	"github.com/sleuth-io/prx/internal/tui/chat"
 	"github.com/sleuth-io/prx/internal/tui/conversation"
 	"github.com/sleuth-io/prx/internal/tui/scoring"
@@ -26,6 +27,12 @@ type ConversationScene struct {
 	actionDone   bool
 	width        int
 	height       int
+
+	// Image overlay: rendered outside viewport to avoid layout corruption.
+	imageOverlay    string // raw escape sequence
+	imageContentRow int    // line in viewport content where image goes
+	imageLinkRow    int    // line in viewport content where clickable link is
+	imageURL        string // URL for clickable link below image
 }
 
 func newConversationScene() *ConversationScene {
@@ -61,6 +68,8 @@ func (s *ConversationScene) Update(msg tea.Msg, m *Model) (Scene, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		return s.handleKey(msg, m)
+	case tea.MouseMsg:
+		return s.handleMouse(msg, m)
 	case actionDoneMsg:
 		return s.handleActionDone(msg, m)
 	}
@@ -111,7 +120,21 @@ func (s *ConversationScene) View(m *Model) string {
 		parts = append(parts, inputArea)
 	}
 	parts = append(parts, s.renderFooter(m))
-	return lipgloss.JoinVertical(lipgloss.Left, parts...)
+	result := lipgloss.JoinVertical(lipgloss.Left, parts...)
+
+	// Overlay image using cursor positioning (outside viewport content to
+	// avoid layout corruption from Kitty/sixel escape sequences).
+	if s.imageOverlay != "" {
+		// Clear all previous Kitty images so they don't persist at old positions.
+		result += "\x1b_Ga=d,d=a\x1b\\"
+		screenRow := s.imageContentRow - s.viewport.YOffset
+		if screenRow >= 0 && screenRow < s.viewport.Height {
+			// CSI save cursor, move to row, output image, restore cursor
+			result += fmt.Sprintf("\x1b7\x1b[%d;1H%s\x1b8", screenRow+1, s.imageOverlay)
+		}
+	}
+
+	return result
 }
 
 func (s *ConversationScene) Resize(width, height int) {
@@ -163,6 +186,16 @@ func (s *ConversationScene) handleKey(msg tea.KeyMsg, m *Model) (Scene, tea.Cmd)
 		return s, s.sendChatMessage(m)
 	}
 
+	// Viewport scrolling
+	switch msg.String() {
+	case "pgup":
+		s.viewport.HalfPageUp()
+		return s, nil
+	case "pgdown":
+		s.viewport.HalfPageDown()
+		return s, nil
+	}
+
 	// Ctrl/special key commands (work regardless of input state)
 	if scene, cmd, handled := s.handleCtrlKey(msg, m); handled {
 		return scene, cmd
@@ -173,6 +206,28 @@ func (s *ConversationScene) handleKey(msg tea.KeyMsg, m *Model) (Scene, tea.Cmd)
 	s.input, cmd = s.input.Update(msg)
 	s.updateInputHeight()
 	return s, cmd
+}
+
+func (s *ConversationScene) handleMouse(msg tea.MouseMsg, m *Model) (Scene, tea.Cmd) {
+	logger.Info("mouse: button=%d x=%d y=%d ctrl=%v", msg.Button, msg.X, msg.Y, msg.Ctrl)
+	switch msg.Button {
+	case tea.MouseButtonWheelUp:
+		s.viewport.ScrollUp(3)
+	case tea.MouseButtonWheelDown:
+		s.viewport.ScrollDown(3)
+	case tea.MouseButtonLeft:
+		linkScreenRow := s.imageLinkRow - s.viewport.YOffset
+		logger.Info("mouse click: imageURL=%q ctrl=%v linkRow=%d y=%d",
+			s.imageURL, msg.Ctrl, linkScreenRow, msg.Y)
+		// Ctrl+click on image link line → open URL
+		if s.imageURL != "" && msg.Ctrl {
+			if msg.Y == linkScreenRow {
+				logger.Info("opening URL: %s", s.imageURL)
+				return s, openURLCmd(s.imageURL)
+			}
+		}
+	}
+	return s, nil
 }
 
 func (s *ConversationScene) handleConfirmKey(msg tea.KeyMsg) (Scene, tea.Cmd) {
@@ -322,9 +377,18 @@ func (s *ConversationScene) BuildScrollback(m *Model) {
 	var blocks []conversation.Block
 
 	// 1. Assessment block (includes PR header)
+	renderData := m.buildRenderData(card)
+	assessmentContent := scoring.RenderInline(&renderData, width)
 	blocks = append(blocks, &conversation.AssessmentBlock{
-		Content: scoring.RenderInline(m.buildRenderData(card), width),
+		Content: assessmentContent,
 	})
+
+	// Track image overlay (rendered outside viewport to avoid layout issues)
+	s.imageOverlay, s.imageURL = scoring.ImageOverlay(&renderData)
+	s.imageContentRow = renderData.BodyEndLine
+	if m.imageCache != nil {
+		s.imageLinkRow = s.imageContentRow + m.imageCache.PlaceholderLines()
+	}
 
 	// 2. Chat messages + streaming
 	cs := card.Chat

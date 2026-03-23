@@ -113,3 +113,9 @@ type prRefreshedMsg struct {
 	newDiff  string // non-empty when head SHA changed and diff was re-fetched
 	err      error
 }
+
+type imageFetchedMsg struct {
+	prNumber int
+	url      string
+	err      error
+}

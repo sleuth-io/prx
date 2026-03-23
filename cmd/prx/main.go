@@ -66,7 +66,7 @@ func main() {
 			}
 
 			m := tui.New(a)
-			p := tea.NewProgram(m, tea.WithAltScreen())
+			p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 			go func() {
 				p.Send(tui.SetProgramMsg{Program: p})
 			}()

@@ -10,6 +10,7 @@ import (
 	"github.com/sleuth-io/prx/internal/cache"
 	"github.com/sleuth-io/prx/internal/config"
 	"github.com/sleuth-io/prx/internal/github"
+	"github.com/sleuth-io/prx/internal/imgrender"
 	"github.com/sleuth-io/prx/internal/logger"
 	"github.com/sleuth-io/prx/internal/tui/conversation"
 	"github.com/sleuth-io/prx/internal/tui/perm"
@@ -37,6 +38,8 @@ func (m *Model) updateReview(msg tea.Msg) (Model, tea.Cmd) {
 		return m.handlePRScored(msg)
 	case prRefreshedMsg:
 		return m.handlePRRefreshed(msg)
+	case imageFetchedMsg:
+		return m.handleImageFetched(msg)
 	case commentSubmittedMsg:
 		return m.handleCommentSubmitted(msg)
 	case chatWorktreeReadyMsg:
@@ -204,6 +207,8 @@ func (m *Model) handlePRDetails(msg prDetailsFetchedMsg) (Model, tea.Cmd) {
 	cmds := []tea.Cmd{scorePRCmd(pr, m.app, m.program), parseDiffCmd(pr)}
 	// Pre-create worktree eagerly so chat doesn't block on it later.
 	cmds = append(cmds, createWorktreeCmd(m.app.RepoDir, pr.HeadRefName, pr.Number))
+	// Fetch images from PR body in background
+	cmds = append(cmds, m.fetchBodyImages(pr)...)
 	return *m, tea.Batch(cmds...)
 }
 
@@ -401,6 +406,32 @@ func (m *Model) handleCommentSubmitted(msg commentSubmittedMsg) (Model, tea.Cmd)
 			m.diffView.RemoveComment(msg.pendingItem)
 		}
 	}
+	return *m, nil
+}
+
+// fetchBodyImages returns commands to fetch any images in the PR body.
+func (m *Model) fetchBodyImages(pr *github.PR) []tea.Cmd {
+	if m.imageCache == nil || pr.Body == "" {
+		return nil
+	}
+	refs := imgrender.ExtractImages(pr.Body)
+	var cmds []tea.Cmd
+	for _, ref := range refs {
+		if m.imageCache.Get(ref.URL) == "" {
+			cmds = append(cmds, fetchImageCmd(pr.Number, ref.URL, m.imageCache))
+		}
+	}
+	return cmds
+}
+
+func (m *Model) handleImageFetched(msg imageFetchedMsg) (Model, tea.Cmd) {
+	if msg.err != nil {
+		logger.Error("image fetch failed for PR #%d: %v", msg.prNumber, msg.err)
+	} else {
+		logger.Info("image fetched for PR #%d: %s", msg.prNumber, msg.url)
+	}
+	// Rebuild scrollback so the image appears
+	m.buildScrollback()
 	return *m, nil
 }
 

@@ -10,6 +10,7 @@ import (
 	"github.com/sleuth-io/prx/internal/ai"
 	"github.com/sleuth-io/prx/internal/config"
 	"github.com/sleuth-io/prx/internal/github"
+	"github.com/sleuth-io/prx/internal/imgrender"
 	"github.com/sleuth-io/prx/internal/tui/diff"
 	"github.com/sleuth-io/prx/internal/tui/style"
 )
@@ -44,6 +45,8 @@ type RenderData struct {
 	ScoringLastTool  string
 	ScoringStatus    string
 	ParsedFiles      []*diff.File
+	ImageCache       *imgrender.Cache
+	BodyEndLine      int // set by buildContent: line after body text (for image placement)
 }
 
 // WeightedScore calculates the weighted score from an assessment.
@@ -73,8 +76,23 @@ func ComputeVerdict(score float64, thresholds config.ThresholdsConfig) string {
 }
 
 // RenderInline renders the assessment as a string for embedding in a scrollback.
-func RenderInline(data RenderData, width int) string {
+func RenderInline(data *RenderData, width int) string {
 	return buildContent(data, width)
+}
+
+// ImageOverlay returns the rendered image escape sequence and source URL.
+// This must be drawn separately (not in viewport content) to avoid layout corruption.
+func ImageOverlay(data *RenderData) (rendered string, url string) {
+	if data.ImageCache == nil || data.PR.Body == "" {
+		return "", ""
+	}
+	rawBody := strings.ReplaceAll(data.PR.Body, "\r\n", "\n")
+	for _, ref := range imgrender.ExtractImages(rawBody) {
+		if r := data.ImageCache.Get(ref.URL); r != "" {
+			return r, ref.URL
+		}
+	}
+	return "", ""
 }
 
 // ScoreBar renders a 5-block bar colored by risk level.
@@ -113,7 +131,7 @@ func RenderVerdict(verdict string) string {
 	}
 }
 
-func buildContent(data RenderData, vpWidth int) string {
+func buildContent(data *RenderData, vpWidth int) string {
 	w := vpWidth
 	if w == 0 {
 		w = 80
@@ -131,7 +149,8 @@ func buildContent(data RenderData, vpWidth int) string {
 	reviews := "  " + renderReviewStatus(pr)
 	checks := "  " + renderChecksStatus(pr)
 
-	prBody := sanitizeBody(strings.TrimSpace(strings.ReplaceAll(pr.Body, "\r\n", "\n")))
+	rawBody := strings.TrimSpace(strings.ReplaceAll(pr.Body, "\r\n", "\n"))
+	prBody := sanitizeBody(rawBody)
 
 	var riskLine string
 	if data.Scoring {
@@ -205,6 +224,18 @@ func buildContent(data RenderData, vpWidth int) string {
 	if prBody != "" {
 		rendered := lipgloss.NewStyle().Foreground(lipgloss.Color("243")).Width(w - 4).Render("  " + prBody)
 		cols = lipgloss.JoinVertical(lipgloss.Left, cols, rendered)
+	}
+	data.BodyEndLine = strings.Count(cols, "\n") + 1
+	// Reserve blank lines for image overlay (if any) so risk factors appear below.
+	// Add a clickable filename link BELOW the image area so it's not covered.
+	if data.ImageCache != nil && pr.Body != "" {
+		for _, ref := range imgrender.ExtractImages(strings.ReplaceAll(pr.Body, "\r\n", "\n")) {
+			if data.ImageCache.Get(ref.URL) != "" {
+				cols += strings.Repeat("\n", data.ImageCache.PlaceholderLines())
+				cols += "\n" + style.DimStyle.Render("  📎 "+ref.URL)
+				break
+			}
+		}
 	}
 
 	if data.Assessment == nil {
@@ -401,16 +432,11 @@ func findKeyHunk(kh *ai.KeyHunk, files []*diff.File) *diff.Hunk {
 }
 
 var (
-	reImg      = regexp.MustCompile(`<img\b[^>]*?alt="([^"]*)"[^>]*/?>`)
-	reImgNoAlt = regexp.MustCompile(`<img\b[^>]*/?>`)
-	reHTMLTag  = regexp.MustCompile(`</?[a-zA-Z][^>]*>`)
+	reHTMLTag = regexp.MustCompile(`</?[a-zA-Z][^>]*>`)
 )
 
 // sanitizeBody converts HTML in PR descriptions to terminal-friendly text.
 func sanitizeBody(s string) string {
-	// Replace <img> tags with [image: alt] or [image]
-	s = reImg.ReplaceAllString(s, "[image: $1]")
-	s = reImgNoAlt.ReplaceAllString(s, "[image]")
 	// Strip remaining HTML tags
 	s = reHTMLTag.ReplaceAllString(s, "")
 	// Collapse multiple blank lines

@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/sleuth-io/prx/internal/app"
 	"github.com/sleuth-io/prx/internal/cache"
 	"github.com/sleuth-io/prx/internal/github"
+	"github.com/sleuth-io/prx/internal/imgrender"
 	"github.com/sleuth-io/prx/internal/logger"
 	"github.com/sleuth-io/prx/internal/mcp"
 	"github.com/sleuth-io/prx/internal/tui/chat"
@@ -128,6 +130,27 @@ func postInlineCommentCmd(repo string, prNumber int, sha, path string, line int,
 		err := github.PostInlineComment(repo, prNumber, sha, path, line, body)
 		return commentSubmittedMsg{prNumber: prNumber, isInline: true,
 			filePath: path, fileLine: line, body: body, pendingItem: item, err: err}
+	}
+}
+
+func fetchImageCmd(prNumber int, url string, cache *imgrender.Cache) tea.Cmd {
+	return func() tea.Msg {
+		_, err := cache.FetchAndRender(url)
+		return imageFetchedMsg{prNumber: prNumber, url: url, err: err}
+	}
+}
+
+func openURLCmd(url string) tea.Cmd {
+	return func() tea.Msg {
+		var cmd *exec.Cmd
+		switch runtime.GOOS {
+		case "darwin":
+			cmd = exec.Command("open", url)
+		default:
+			cmd = exec.Command("xdg-open", url)
+		}
+		_ = cmd.Start()
+		return nil
 	}
 }
 
