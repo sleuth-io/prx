@@ -173,7 +173,6 @@ func createWorktreeCmd(repoDir string, headRefName string, prNumber int) tea.Cmd
 			logger.Error("fetch for PR #%d branch %s: %v\n%s", prNumber, headRefName, err, string(out))
 			return chatWorktreeReadyMsg{prNumber: prNumber, err: fmt.Errorf("git fetch: %w\n%s", err, string(out))}
 		}
-		logger.Info("worktree: fetch done for PR #%d, creating worktree", prNumber)
 
 		path := fmt.Sprintf("/tmp/prx-%d-%d", prNumber, rand.Intn(100000))
 		cmd := exec.Command("git", "worktree", "add", path, "FETCH_HEAD", "--detach")
@@ -198,6 +197,41 @@ func removeWorktreeCmd(repoDir, path string) tea.Cmd {
 			logger.Info("worktree removed: %s", path)
 		}
 		return nil
+	}
+}
+
+// sendChatCmdWarm sends a chat message using a pre-warmed Claude process.
+func sendChatCmdWarm(wp *ai.WarmProcess, pr *github.PR, assessment *ai.Assessment, messages []chat.Message, diffCtx *ai.DiffContext, isOwnPR bool, socketPath string, program *tea.Program, skillCatalog []ai.SkillCatalog) tea.Cmd {
+	return func() tea.Msg {
+		history := make([]ai.ChatMessage, len(messages))
+		for i, m := range messages {
+			history[i] = ai.ChatMessage{Role: m.Role, Content: m.Content}
+		}
+
+		var availableActions []string
+		if socketPath != "" {
+			availableActions = ActionToolNames(isOwnPR)
+		}
+
+		prompt := ai.BuildChatPrompt(pr, assessment, history, diffCtx, availableActions, skillCatalog)
+
+		callbacks := ai.StreamCallbacks{
+			OnStatus: func(status string) {
+				program.Send(chatStatusMsg{prNumber: pr.Number, status: status})
+			},
+			OnToolCall: func(count int, summary string) {
+				program.Send(chatToolCallMsg{prNumber: pr.Number, count: count, lastTool: summary})
+			},
+			OnToken: func(delta string) {
+				program.Send(chatTokenMsg{prNumber: pr.Number, token: delta})
+			},
+		}
+
+		result, err := wp.Send(prompt, callbacks)
+		if err != nil {
+			return chatDoneMsg{prNumber: pr.Number, err: err}
+		}
+		return chatDoneMsg{prNumber: pr.Number, fullResponse: result}
 	}
 }
 
@@ -237,7 +271,6 @@ func sendChatCmd(ctx context.Context, worktreePath string, pr *github.PR, assess
 				}
 			}
 		}
-
 		var availableActions []string
 		if socketPath != "" {
 			availableActions = actionTools

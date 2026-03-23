@@ -8,7 +8,15 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"encoding/json"
+	"os"
+	"strconv"
+	"strings"
+
+	"github.com/sleuth-io/prx/internal/ai"
 	"github.com/sleuth-io/prx/internal/app"
+	"github.com/sleuth-io/prx/internal/logger"
+	"github.com/sleuth-io/prx/internal/mcp"
 	"github.com/sleuth-io/prx/internal/tui/bulkapprove"
 	"github.com/sleuth-io/prx/internal/tui/diff"
 	"github.com/sleuth-io/prx/internal/tui/perm"
@@ -179,11 +187,6 @@ func (m Model) isOwnPR(card *PRCard) bool {
 }
 
 func (m *Model) navigatePR(delta int, s *ConversationScene) {
-	if !m.bulkApproveShown && m.scoring == 0 && m.fetching == 0 {
-		if m.tryEnterBulkApprove() {
-			return
-		}
-	}
 	next := m.current + delta
 	if next < 0 || next >= len(m.cards) {
 		return
@@ -193,6 +196,10 @@ func (m *Model) navigatePR(delta int, s *ConversationScene) {
 	s.actionDone = false
 	m.loadCurrentDiff()
 	s.BuildScrollback(m)
+	// Pre-warm Claude for the newly visible PR.
+	if card := m.currentCard(); card != nil {
+		m.tryPreWarm(card)
+	}
 }
 
 func (m *Model) loadCurrentDiff() {
@@ -225,7 +232,15 @@ func (m *Model) buildRenderData(card *PRCard) scoring.RenderData {
 }
 
 // startChatCmd creates a sendChatCmd for the given card.
+// If a warm process is available, it uses that instead of spawning a new one.
 func (m *Model) startChatCmd(card *PRCard) tea.Cmd {
+	wp := card.Chat.TakeWarm()
+	if wp != nil {
+		logger.Info("chat: using warm process for PR #%d", card.PR.Number)
+		card.Chat.Cancel = wp.Kill
+		return sendChatCmdWarm(wp, card.PR, card.Assessment, card.Chat.Messages,
+			nil, m.isOwnPR(card), m.permSocketPath, m.program, m.skillCatalog())
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	card.Chat.Cancel = cancel
 	return sendChatCmd(ctx, card.Chat.WorktreePath, card.PR, card.Assessment, card.Chat.Messages,
@@ -233,11 +248,96 @@ func (m *Model) startChatCmd(card *PRCard) tea.Cmd {
 		m.permSocketPath, m.program, m.skillCatalog())
 }
 
+// buildClaudeArgs builds the common Claude CLI arguments for a card (tools, MCP config, model)
+// but does NOT include -p/prompt or output format flags.
+// Returns (args, mcpConfigFile) — caller must clean up the config file.
+func (m *Model) buildClaudeArgs(card *PRCard) []string {
+	actionTools := ActionToolNames(m.isOwnPR(card))
+
+	allTools := append([]string{"Read", "Glob", "Grep"}, mcp.ToolNames()...)
+	var availableActions []string
+	if m.permSocketPath != "" {
+		availableActions = actionTools
+		allTools = append(allTools, availableActions...)
+	}
+	allowedTools := strings.Join(allTools, ",")
+
+	args := []string{
+		"--verbose",
+		"--allowedTools", allowedTools,
+		"--strict-mcp-config",
+		"--no-session-persistence",
+	}
+
+	// MCP config file for the prx mcp-server.
+	binPath, binErr := os.Executable()
+	if binErr == nil && m.permSocketPath != "" {
+		mcpCfg := map[string]any{
+			"mcpServers": map[string]any{
+				"prx": map[string]any{
+					"command": binPath,
+					"args": []string{
+						"mcp-server",
+						"--socket=" + m.permSocketPath,
+						"--repo=" + m.app.Repo,
+						"--pr=" + strconv.Itoa(card.PR.Number),
+						"--commit=" + card.PR.HeadSHA,
+					},
+				},
+			},
+		}
+		if cfgBytes, err := json.Marshal(mcpCfg); err == nil {
+			if tmp, err := os.CreateTemp("", "prx-mcp-*.json"); err == nil {
+				_, _ = tmp.Write(cfgBytes)
+				_ = tmp.Close()
+				args = append(args, "--mcp-config", tmp.Name())
+			}
+		}
+	}
+
+	if m.app.Config.Review.Model != "" {
+		args = append(args, "--model", m.app.Config.Review.Model)
+	}
+
+	return args
+}
+
+// tryPreWarm starts a Claude CLI process for the card that initializes hooks
+// and MCP servers but does not send a prompt (zero tokens consumed).
+// When the user sends a message, sendChatCmd will use this warm process.
+func (m *Model) tryPreWarm(card *PRCard) {
+	if card.Chat.HasWarm() || card.Chat.WorktreePath == "" || card.Assessment == nil {
+		return
+	}
+
+	logger.Info("chat: pre-warming Claude for PR #%d", card.PR.Number)
+	card.Chat.Status = "Starting Claude..."
+
+	prNumber := card.PR.Number
+	args := m.buildClaudeArgs(card)
+	wp := ai.StartWarm(context.Background(), args, card.Chat.WorktreePath)
+	wp.OnStatus = func(status string) {
+		m.program.Send(chatStatusMsg{prNumber: prNumber, status: status})
+	}
+	card.Chat.Warm = wp
+
+	// Monitor warm process readiness in background to clear status.
+	go func() {
+		<-wp.Ready()
+		if wp.InitErr() != nil {
+			logger.Error("chat: warm process init failed for PR #%d: %v", prNumber, wp.InitErr())
+		} else {
+			logger.Info("chat: warm process ready for PR #%d", prNumber)
+		}
+		m.program.Send(chatStatusMsg{prNumber: prNumber, status: ""})
+	}()
+}
+
 // hardReset cancels all in-flight work, clears cache, and restarts from scratch.
 func (m *Model) hardReset() tea.Cmd {
 	var cmds []tea.Cmd
 	for _, card := range m.cards {
-		card.Chat.CancelStreaming()
+		card.Chat.Cleanup()
 		if card.Chat.WorktreePath != "" {
 			cmds = append(cmds, removeWorktreeCmd(m.app.RepoDir, card.Chat.WorktreePath))
 		}
@@ -267,6 +367,7 @@ func (m *Model) cleanupWorktrees() tea.Cmd {
 	}
 	var cmds []tea.Cmd
 	for _, card := range m.cards {
+		card.Chat.Cleanup()
 		if card.Chat.WorktreePath != "" {
 			cmds = append(cmds, removeWorktreeCmd(m.app.RepoDir, card.Chat.WorktreePath))
 		}

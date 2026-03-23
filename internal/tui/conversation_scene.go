@@ -257,6 +257,7 @@ func (s *ConversationScene) sendChatMessage(m *Model) tea.Cmd {
 	if body == "" || card.Chat.IsStreaming() {
 		return nil
 	}
+
 	s.input.Reset()
 	s.updateInputHeight()
 	card.Chat.StartMessage(body)
@@ -337,6 +338,7 @@ func (s *ConversationScene) BuildScrollback(m *Model) {
 				ToolCallCount: cs.ToolCallCount,
 				LastToolCall:  cs.LastToolCall,
 				Status:        cs.Status,
+				ThinkingSince: cs.StreamStart,
 			},
 		})
 	}

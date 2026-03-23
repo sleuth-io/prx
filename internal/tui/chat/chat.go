@@ -3,6 +3,7 @@ package chat
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/sleuth-io/prx/internal/tui/style"
@@ -27,6 +28,7 @@ type StreamState struct {
 	ToolCallCount int
 	LastToolCall  string
 	Status        string
+	ThinkingSince time.Time // when thinking started (zero if not thinking)
 }
 
 // RenderMessages renders chat messages as a string for embedding in a scrollback.
@@ -65,11 +67,18 @@ func RenderMessages(messages []Message, width int, stream StreamState) string {
 		}
 	} else if stream.Active {
 		lines = append(lines, "")
+		elapsed := ""
+		if !stream.ThinkingSince.IsZero() {
+			secs := int(time.Since(stream.ThinkingSince).Seconds())
+			if secs > 0 {
+				elapsed = fmt.Sprintf(" (%ds)", secs)
+			}
+		}
 		if stream.ToolCallCount > 0 && stream.LastToolCall != "" {
-			s := chatDimStyle.Width(w).Render(fmt.Sprintf("%s Thinking... (%d tool calls, last: %s)", stream.SpinnerView, stream.ToolCallCount, stream.LastToolCall))
+			s := chatDimStyle.Width(w).Render(fmt.Sprintf("%s Thinking%s (%d tool calls, last: %s)", stream.SpinnerView, elapsed, stream.ToolCallCount, stream.LastToolCall))
 			lines = append(lines, strings.Split(s, "\n")...)
 		} else {
-			lines = append(lines, chatDimStyle.Render(stream.SpinnerView+" Thinking..."))
+			lines = append(lines, chatDimStyle.Render(stream.SpinnerView+" Thinking..."+elapsed))
 		}
 	} else if stream.Status != "" {
 		lines = append(lines, "")

@@ -183,7 +183,9 @@ func (m *Model) handlePRDetails(msg prDetailsFetchedMsg) (Model, tea.Cmd) {
 		}
 		m.logStep(fmt.Sprintf("Loaded PR #%d: %s%s (%d/%d)", pr.Number, truncate(pr.Title, 40), cached, fetched, m.total))
 	}
-	card := &PRCard{PR: pr, Scoring: true, Chat: &conversation.ChatSession{}}
+	card := &PRCard{PR: pr, Scoring: true, Chat: &conversation.ChatSession{
+		Status: "Preparing chat...",
+	}}
 	// Insert sorted by PR number descending (newest first).
 	idx := 0
 	for idx < len(m.cards) && m.cards[idx].PR.Number > pr.Number {
@@ -199,7 +201,10 @@ func (m *Model) handlePRDetails(msg prDetailsFetchedMsg) (Model, tea.Cmd) {
 	if len(m.cards) == 1 {
 		m.buildScrollback()
 	}
-	return *m, tea.Batch(scorePRCmd(pr, m.app, m.program), parseDiffCmd(pr))
+	cmds := []tea.Cmd{scorePRCmd(pr, m.app, m.program), parseDiffCmd(pr)}
+	// Pre-create worktree eagerly so chat doesn't block on it later.
+	cmds = append(cmds, createWorktreeCmd(m.app.RepoDir, pr.HeadRefName, pr.Number))
+	return *m, tea.Batch(cmds...)
 }
 
 func (m *Model) handleDiffParsed(msg prDiffParsedMsg) (Model, tea.Cmd) {
@@ -285,9 +290,8 @@ func (m *Model) handlePRScored(msg prScoredMsg) (Model, tea.Cmd) {
 		if card.parsedFiles != nil {
 			m.diffView.SetParsedContent(card.parsedFiles, card.PR)
 		}
-	}
-	if m.scoring == 0 && m.fetching == 0 && !m.bulkApproveShown {
-		m.tryEnterBulkApprove()
+		// Pre-warm Claude for the current visible PR once assessment is ready.
+		m.tryPreWarm(card)
 	}
 	return *m, nil
 }
@@ -405,6 +409,7 @@ func (m *Model) handleCommentSubmitted(msg commentSubmittedMsg) (Model, tea.Cmd)
 // ---------------------------------------------------------------------------
 
 func (m *Model) handleChatWorktreeReady(msg chatWorktreeReadyMsg) (Model, tea.Cmd) {
+	logger.Info("chat: worktree ready for PR #%d (err=%v)", msg.prNumber, msg.err)
 	for _, card := range m.cards {
 		if card.PR.Number == msg.prNumber {
 			if msg.err != nil {
@@ -416,6 +421,7 @@ func (m *Model) handleChatWorktreeReady(msg chatWorktreeReadyMsg) (Model, tea.Cm
 	}
 	if card := m.currentCard(); card != nil && card.PR.Number == msg.prNumber && msg.err == nil {
 		if card.Chat.IsStreaming() {
+			logger.Info("chat: worktree ready, starting sendChatCmd")
 			card.Chat.Status = ""
 			ctx, cancel := context.WithCancel(context.Background())
 			card.Chat.Cancel = cancel
@@ -424,6 +430,10 @@ func (m *Model) handleChatWorktreeReady(msg chatWorktreeReadyMsg) (Model, tea.Cm
 				nil, m.app.Config.Review.Model, m.app.Repo, m.isOwnPR(card),
 				m.permSocketPath, m.program, m.skillCatalog())
 		}
+	}
+	// Try pre-warming if worktree just became available for the current PR.
+	if card := m.currentCard(); card != nil && card.PR.Number == msg.prNumber && msg.err == nil {
+		m.tryPreWarm(card)
 	}
 	m.buildScrollback()
 	return *m, nil
