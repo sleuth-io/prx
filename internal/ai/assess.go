@@ -85,7 +85,7 @@ Respond with ONLY a JSON object in this exact format:
 
 	sb.WriteString(`  },
   "risk_summary": "<one sentence, max 80 chars>",
-  "review_notes": "- <what the PR does>\n- <key concern 1>\n- <key concern 2>",
+  "review_notes": "**Summary:** <one sentence>\n**Risk:** <biggest risk>\n**Focus:** <where to look>",
   "hunk_annotations": [
     {"file": "<path>", "start_line": <new-file line number from hunk header>, "trivial": <true|false>, "reason": "<why trivial or not, max 40 chars>"}
   ],
@@ -100,7 +100,14 @@ The start_line is the new-file line number from the hunk header (the + number in
 
 For key_hunk: identify the single most important hunk — the one a reviewer should look at first.
 Pick the hunk with the highest risk or the most significant behavioral change. Use the same
-file and start_line format as hunk_annotations.`)
+file and start_line format as hunk_annotations.
+
+For review_notes: write in plain language a non-technical manager could understand.
+- **Summary:** one sentence describing what this PR does and why, at a business/feature level.
+- **Risk:** the single biggest risk in behavior or business terms (not code-level details).
+- **Focus:** the one area a reviewer should pay attention to and why.
+Do NOT use variable names, file paths, function names, or code references. Think "what would
+I tell a skip-level manager who asked what this PR is about?"`)
 
 	return sb.String()
 }

@@ -216,18 +216,9 @@ func buildContent(data RenderData, vpWidth int) string {
 	wrapStyle := lipgloss.NewStyle().Width(wrapW)
 	var below []string
 
-	below = append(below, factorDetails...)
-
-	if keyHunkLines := renderKeyHunk(a, data.ParsedFiles, w); len(keyHunkLines) > 0 {
-		below = append(below, keyHunkLines...)
-	}
-
-	hasNotes := false
+	// Review Guide first — the actionable summary
 	if a.RiskSummary != "" || a.ReviewNotes != "" {
-		below = append(below, style.DimStyle.Render("  ── Review Notes ──"))
-		hasNotes = true
-	}
-	if a.RiskSummary != "" || a.ReviewNotes != "" {
+		below = append(below, style.DimStyle.Render("  ── Review Guide ──"))
 		if a.RenderedNotes == "" {
 			notes := ""
 			if a.RiskSummary != "" {
@@ -240,7 +231,15 @@ func buildContent(data RenderData, vpWidth int) string {
 		}
 		below = append(below, a.RenderedNotes)
 	}
-	_ = hasNotes
+
+	// Key Change preview
+	if keyHunkLines := renderKeyHunk(a, data.ParsedFiles, w); len(keyHunkLines) > 0 {
+		below = append(below, keyHunkLines...)
+	}
+
+	// Risk Factors — detailed breakdown
+	below = append(below, factorDetails...)
+
 	_ = wrapStyle
 	if len(below) == 0 {
 		return cols
@@ -402,9 +401,9 @@ func findKeyHunk(kh *ai.KeyHunk, files []*diff.File) *diff.Hunk {
 }
 
 var (
-	reImg     = regexp.MustCompile(`<img\b[^>]*?alt="([^"]*)"[^>]*/?>`)
+	reImg      = regexp.MustCompile(`<img\b[^>]*?alt="([^"]*)"[^>]*/?>`)
 	reImgNoAlt = regexp.MustCompile(`<img\b[^>]*/?>`)
-	reHTMLTag = regexp.MustCompile(`</?[a-zA-Z][^>]*>`)
+	reHTMLTag  = regexp.MustCompile(`</?[a-zA-Z][^>]*>`)
 )
 
 // sanitizeBody converts HTML in PR descriptions to terminal-friendly text.
