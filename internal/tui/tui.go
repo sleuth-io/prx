@@ -228,6 +228,7 @@ func (m *Model) buildRenderData(card *PRCard) scoring.RenderData {
 		ScoringToolCount: card.ScoringToolCount,
 		ScoringLastTool:  card.ScoringLastTool,
 		ScoringStatus:    card.ScoringStatus,
+		ParsedFiles:      card.parsedFiles,
 	}
 }
 

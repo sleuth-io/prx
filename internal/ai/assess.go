@@ -23,11 +23,18 @@ type HunkAnnotation struct {
 	Reason    string `json:"reason"`
 }
 
+type KeyHunk struct {
+	File      string `json:"file"`
+	StartLine int    `json:"start_line"`
+	Reason    string `json:"reason"`
+}
+
 type Assessment struct {
 	Factors         map[string]FactorScore `json:"factors"`
 	RiskSummary     string                 `json:"risk_summary"`
 	ReviewNotes     string                 `json:"review_notes"`
 	HunkAnnotations []HunkAnnotation       `json:"hunk_annotations,omitempty"`
+	KeyHunk         *KeyHunk               `json:"key_hunk,omitempty"`
 	DiffTruncated   bool                   `json:"-"` // set by caller, not from AI
 	RenderedNotes   string                 `json:"-"` // cached markdown render
 }
@@ -81,14 +88,19 @@ Respond with ONLY a JSON object in this exact format:
   "review_notes": "- <what the PR does>\n- <key concern 1>\n- <key concern 2>",
   "hunk_annotations": [
     {"file": "<path>", "start_line": <new-file line number from hunk header>, "trivial": <true|false>, "reason": "<why trivial or not, max 40 chars>"}
-  ]
+  ],
+  "key_hunk": {"file": "<path>", "start_line": <new-file line number>, "reason": "<why this is the most important change, max 60 chars>"}
 }
 
 For hunk_annotations: examine each hunk (@@-delimited section) in the diff. For each hunk,
 taking all the above criteria into account, determine whether a senior reviewer needs to read
 it to make their approval decision. A hunk is trivial if it scores low across all criteria —
 e.g. import changes, mechanical renames, boilerplate, auto-generated code. Include ALL hunks.
-The start_line is the new-file line number from the hunk header (the + number in @@ -x,y +Z,w @@).`)
+The start_line is the new-file line number from the hunk header (the + number in @@ -x,y +Z,w @@).
+
+For key_hunk: identify the single most important hunk — the one a reviewer should look at first.
+Pick the hunk with the highest risk or the most significant behavioral change. Use the same
+file and start_line format as hunk_annotations.`)
 
 	return sb.String()
 }

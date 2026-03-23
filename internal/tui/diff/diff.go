@@ -379,6 +379,73 @@ func (d *DiffView) PrevHunk() {
 	}
 }
 
+// ScrollToHunk scrolls to the hunk matching the given file and start line (±3 fuzzy).
+// If the file or hunk is collapsed, it expands them first.
+func (d *DiffView) ScrollToHunk(file string, startLine int) {
+	// Find the file and hunk indices
+	fileIdx := -1
+	hunkIdx := -1
+	for fi, f := range d.files {
+		if f.Name != file {
+			continue
+		}
+		fileIdx = fi
+		// Exact match first
+		for hi, h := range f.Hunks {
+			if h.StartLine == startLine {
+				hunkIdx = hi
+				break
+			}
+		}
+		// Fuzzy match ±3
+		if hunkIdx < 0 {
+			for delta := 1; delta <= 3; delta++ {
+				for hi, h := range f.Hunks {
+					if h.StartLine == startLine+delta || h.StartLine == startLine-delta {
+						hunkIdx = hi
+						break
+					}
+				}
+				if hunkIdx >= 0 {
+					break
+				}
+			}
+		}
+		break
+	}
+	if fileIdx < 0 || hunkIdx < 0 {
+		return
+	}
+
+	// Expand file and hunk if collapsed
+	changed := false
+	if d.files[fileIdx].Collapsed {
+		d.files[fileIdx].Collapsed = false
+		changed = true
+	}
+	if d.files[fileIdx].Hunks[hunkIdx].Collapsed {
+		d.files[fileIdx].Hunks[hunkIdx].Collapsed = false
+		changed = true
+	}
+	if changed {
+		d.rebuildViewport()
+	}
+
+	// Find the collapsible entry for this hunk and jump to it
+	for _, c := range d.collapsibles {
+		if c.kind == kindHunk && c.fileIdx == fileIdx && c.hunkIdx == hunkIdx {
+			d.cursorLine = c.lineIdx
+			idealOffset := d.cursorLine - d.viewport.Height/2
+			if idealOffset < 0 {
+				idealOffset = 0
+			}
+			d.viewport.SetYOffset(idealOffset)
+			d.syncViewport()
+			return
+		}
+	}
+}
+
 func (d *DiffView) MoveCursor(delta int) {
 	d.cursorLine += delta
 	if d.cursorLine < 0 {

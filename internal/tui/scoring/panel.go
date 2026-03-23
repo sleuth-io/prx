@@ -9,6 +9,7 @@ import (
 	"github.com/sleuth-io/prx/internal/ai"
 	"github.com/sleuth-io/prx/internal/config"
 	"github.com/sleuth-io/prx/internal/github"
+	"github.com/sleuth-io/prx/internal/tui/diff"
 	"github.com/sleuth-io/prx/internal/tui/style"
 )
 
@@ -42,6 +43,7 @@ type RenderData struct {
 	ScoringToolCount int
 	ScoringLastTool  string
 	ScoringStatus    string
+	ParsedFiles      []*diff.File
 }
 
 // WeightedScore calculates the weighted score from an assessment.
@@ -225,6 +227,10 @@ func buildContent(data RenderData, vpWidth int) string {
 
 	below = append(below, factorDetails...)
 
+	if keyHunkLines := renderKeyHunk(a, data.ParsedFiles, w); len(keyHunkLines) > 0 {
+		below = append(below, keyHunkLines...)
+	}
+
 	hasNotes := false
 	if a.RiskSummary != "" || a.ReviewNotes != "" {
 		below = append(below, style.DimStyle.Render("  ── Review Notes ──"))
@@ -311,4 +317,95 @@ func renderChecksStatus(pr *github.PR) string {
 		return verdictApprove.Render("Checks: " + summary)
 	}
 	return style.DimStyle.Render("Checks: " + summary)
+}
+
+var (
+	keyHunkFileStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("215"))
+	keyHunkLineNum    = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	keyHunkReasonText = lipgloss.NewStyle().Foreground(lipgloss.Color("248")).Italic(true)
+)
+
+// renderKeyHunk finds the AI-identified key hunk in parsed files and renders a compact preview.
+func renderKeyHunk(a *ai.Assessment, files []*diff.File, _ int) []string {
+	if a.KeyHunk == nil || files == nil {
+		return nil
+	}
+
+	hunk := findKeyHunk(a.KeyHunk, files)
+	if hunk == nil {
+		return nil
+	}
+
+	var lines []string
+	lines = append(lines, style.DimStyle.Render("  ── Key Change ──"))
+
+	// Build the code block content using pre-rendered syntax-highlighted lines
+	maxLines := 10
+	var codeLines []string
+	gutterW := 3
+	for i, rendered := range hunk.Rendered {
+		if i >= maxLines {
+			more := fmt.Sprintf("  … %d more lines (^d to view full diff)", len(hunk.Rendered)-i)
+			codeLines = append(codeLines, style.DimStyle.Render(more))
+			break
+		}
+		// Add line numbers like the diff view
+		lineNum := -1
+		if i < len(hunk.LineNums) {
+			lineNum = hunk.LineNums[i]
+		}
+		var gutter string
+		if lineNum > 0 {
+			gutter = keyHunkLineNum.Render(fmt.Sprintf("%*d ", gutterW, lineNum))
+		} else {
+			gutter = keyHunkLineNum.Render(strings.Repeat(" ", gutterW+1))
+		}
+		codeLines = append(codeLines, gutter+rendered)
+	}
+
+	// Render the code block with a left border for clear separation
+	codeBlock := lipgloss.NewStyle().
+		BorderStyle(lipgloss.NormalBorder()).
+		BorderLeft(true).
+		BorderForeground(lipgloss.Color("62")).
+		PaddingLeft(1).
+		Render(strings.Join(codeLines, "\n"))
+
+	// File header above the code block
+	fileHeader := "  " + keyHunkFileStyle.Render(a.KeyHunk.File)
+	lines = append(lines, fileHeader)
+	// Indent the code block
+	for _, cl := range strings.Split(codeBlock, "\n") {
+		lines = append(lines, "  "+cl)
+	}
+
+	if a.KeyHunk.Reason != "" {
+		lines = append(lines, "  "+keyHunkReasonText.Render(a.KeyHunk.Reason))
+	}
+
+	return lines
+}
+
+// findKeyHunk matches a KeyHunk reference to a parsed hunk, with ±3 line fuzzy matching.
+func findKeyHunk(kh *ai.KeyHunk, files []*diff.File) *diff.Hunk {
+	for _, f := range files {
+		if f.Name != kh.File {
+			continue
+		}
+		// Exact match first
+		for _, h := range f.Hunks {
+			if h.StartLine == kh.StartLine {
+				return h
+			}
+		}
+		// Fuzzy match ±3 lines
+		for delta := 1; delta <= 3; delta++ {
+			for _, h := range f.Hunks {
+				if h.StartLine == kh.StartLine+delta || h.StartLine == kh.StartLine-delta {
+					return h
+				}
+			}
+		}
+	}
+	return nil
 }
