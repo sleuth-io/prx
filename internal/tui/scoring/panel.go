@@ -3,6 +3,7 @@ package scoring
 import (
 	"fmt"
 	"math"
+	"regexp"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -130,7 +131,7 @@ func buildContent(data RenderData, vpWidth int) string {
 	reviews := "  " + renderReviewStatus(pr)
 	checks := "  " + renderChecksStatus(pr)
 
-	prBody := strings.TrimSpace(strings.ReplaceAll(pr.Body, "\r\n", "\n"))
+	prBody := sanitizeBody(strings.TrimSpace(strings.ReplaceAll(pr.Body, "\r\n", "\n")))
 
 	var riskLine string
 	if data.Scoring {
@@ -398,4 +399,24 @@ func findKeyHunk(kh *ai.KeyHunk, files []*diff.File) *diff.Hunk {
 		}
 	}
 	return nil
+}
+
+var (
+	reImg     = regexp.MustCompile(`<img\b[^>]*?alt="([^"]*)"[^>]*/?>`)
+	reImgNoAlt = regexp.MustCompile(`<img\b[^>]*/?>`)
+	reHTMLTag = regexp.MustCompile(`</?[a-zA-Z][^>]*>`)
+)
+
+// sanitizeBody converts HTML in PR descriptions to terminal-friendly text.
+func sanitizeBody(s string) string {
+	// Replace <img> tags with [image: alt] or [image]
+	s = reImg.ReplaceAllString(s, "[image: $1]")
+	s = reImgNoAlt.ReplaceAllString(s, "[image]")
+	// Strip remaining HTML tags
+	s = reHTMLTag.ReplaceAllString(s, "")
+	// Collapse multiple blank lines
+	for strings.Contains(s, "\n\n\n") {
+		s = strings.ReplaceAll(s, "\n\n\n", "\n\n")
+	}
+	return strings.TrimSpace(s)
 }
