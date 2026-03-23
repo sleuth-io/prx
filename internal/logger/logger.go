@@ -5,16 +5,17 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+
+	"github.com/sleuth-io/prx/internal/dirs"
 )
 
 var fileLogger *log.Logger
 
 func Init() error {
-	cacheDir := os.Getenv("XDG_CACHE_HOME")
-	if cacheDir == "" {
-		cacheDir = filepath.Join(os.Getenv("HOME"), ".cache")
+	dir, err := dirs.GetCacheDir()
+	if err != nil {
+		return fmt.Errorf("determining cache dir: %w", err)
 	}
-	dir := filepath.Join(cacheDir, "prx")
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("creating log dir: %w", err)
 	}

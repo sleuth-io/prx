@@ -11,6 +11,7 @@ import (
 
 	"github.com/sleuth-io/prx/internal/ai"
 	"github.com/sleuth-io/prx/internal/config"
+	"github.com/sleuth-io/prx/internal/dirs"
 	"github.com/sleuth-io/prx/internal/logger"
 )
 
@@ -88,9 +89,13 @@ func Key(repo string, prNumber int, diff, reviews string, criteria []config.Crit
 }
 
 func cachePath() string {
-	xdg := os.Getenv("XDG_CACHE_HOME")
-	if xdg == "" {
-		xdg = filepath.Join(os.Getenv("HOME"), ".cache")
+	dir, err := dirs.GetCacheDir()
+	if err != nil {
+		xdg := os.Getenv("XDG_CACHE_HOME")
+		if xdg == "" {
+			xdg = filepath.Join(os.Getenv("HOME"), ".cache")
+		}
+		dir = filepath.Join(xdg, "prx")
 	}
-	return filepath.Join(xdg, "prx", "assessments.json")
+	return filepath.Join(dir, "assessments.json")
 }

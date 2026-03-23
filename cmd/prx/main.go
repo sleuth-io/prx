@@ -1,14 +1,19 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strconv"
+	"syscall"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 
+	"github.com/creativeprojects/go-selfupdate"
 	"github.com/sleuth-io/prx/internal/app"
+	"github.com/sleuth-io/prx/internal/autoupdate"
 	"github.com/sleuth-io/prx/internal/buildinfo"
 	"github.com/sleuth-io/prx/internal/logger"
 	"github.com/sleuth-io/prx/internal/mcp"
@@ -17,6 +22,22 @@ import (
 )
 
 func main() {
+	// Resolve executable path before any update replaces the binary on disk.
+	exe, _ := os.Executable()
+
+	// Apply any pending update from a previous background check.
+	// If an update was applied, re-exec so the new binary handles this invocation.
+	if autoupdate.ApplyPendingUpdate() && exe != "" {
+		_ = syscall.Exec(exe, os.Args, os.Environ())
+		// If re-exec fails, fall through to run current binary
+	}
+
+	// Check for updates in the background (non-blocking, once per day).
+	// Skip if user is running the update or mcp-server subcommand.
+	if len(os.Args) < 2 || (os.Args[1] != "mcp-server" && os.Args[1] != "update") {
+		autoupdate.CheckAndUpdateInBackground()
+	}
+
 	rootCmd := &cobra.Command{
 		Use:           "prx [path]",
 		Short:         "AI-powered pull request review TUI",
@@ -79,7 +100,64 @@ func main() {
 	mcpCmd.Flags().String("pr", "", "PR number")
 	mcpCmd.Flags().String("commit", "", "Head commit SHA (required for inline comments)")
 
+	updateCmd := &cobra.Command{
+		Use:   "update",
+		Short: "Update prx to the latest version",
+		Long:  "Check for and install the latest version of prx from GitHub releases.",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			currentVersion := buildinfo.Version
+			if currentVersion == "dev" || currentVersion == "" {
+				fmt.Fprintln(os.Stderr, "Cannot update development builds. Please install from a release.")
+				return nil
+			}
+
+			checkOnly, _ := cmd.Flags().GetBool("check")
+
+			fmt.Printf("Current version: %s\n", currentVersion)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+
+			slug := selfupdate.ParseSlug(fmt.Sprintf("%s/%s", autoupdate.GithubOwner, autoupdate.GithubRepo))
+
+			fmt.Print("Checking for updates... ")
+			latest, found, err := selfupdate.DetectLatest(ctx, slug)
+			if err != nil {
+				fmt.Println("failed")
+				return fmt.Errorf("failed to check for updates: %w", err)
+			}
+			fmt.Println("done")
+
+			if !found || autoupdate.IsNewerThanRelease(currentVersion, latest.Version()) {
+				fmt.Printf("You are already using the latest version (%s)\n", currentVersion)
+				return nil
+			}
+
+			fmt.Printf("New version available: %s\n", latest.Version())
+
+			if checkOnly {
+				fmt.Println("\nRun 'prx update' to install the new version")
+				return nil
+			}
+
+			fmt.Print("Downloading and installing... ")
+			release, err := selfupdate.UpdateSelf(ctx, currentVersion, slug)
+			if err != nil {
+				fmt.Println("failed")
+				return fmt.Errorf("failed to update: %w", err)
+			}
+			fmt.Println("done")
+
+			fmt.Printf("\nSuccessfully updated to %s!\n", release.Version())
+			autoupdate.ClearPendingUpdate()
+			return nil
+		},
+	}
+	updateCmd.Flags().Bool("check", false, "Only check for updates without installing")
+
 	rootCmd.AddCommand(mcpCmd)
+	rootCmd.AddCommand(updateCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
