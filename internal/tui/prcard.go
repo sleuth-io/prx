@@ -10,18 +10,18 @@ import (
 
 // PRCard is a PR — may be in-progress (Scoring=true) or fully assessed.
 type PRCard struct {
-	PR                 *github.PR
-	Assessment         *ai.Assessment
-	WeightedScore      float64
-	Verdict            string
-	Scoring            bool
-	ScoringErr         error
-	ScoringToolCount   int
-	ScoringLastTool    string
-	ScoringStatus      string
-	parsedFiles        []*diff.File // pre-parsed diff files (nil until ready)
-	annotationsApplied bool         // true once hunk annotations have been applied
-	Chat               *conversation.ChatSession
+	PR                  *github.PR
+	Assessment          *ai.Assessment
+	WeightedScore       float64
+	Verdict             string
+	Scoring             bool
+	ScoringErr          error
+	ScoringToolCount    int
+	ScoringLastTool     string
+	ScoringStatus       string
+	parsedFiles         []*diff.File // pre-parsed diff files (nil until ready)
+	annotationsApplied  bool         // true once hunk annotations have been applied
+	Chat                *conversation.ChatSession
 	PostMerge           bool   // true if this is a merged PR in post-merge review
 	MergedStatusChecked bool   // true once the merged PR status fetch has completed
 	UserHasReviewed     bool   // user left a review (approve/reject/comment) pre-merge
