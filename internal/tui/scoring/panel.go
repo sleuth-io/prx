@@ -170,13 +170,13 @@ func buildContent(data *RenderData, vpWidth int) string {
 	prBody := sanitizeBody(rawBody)
 
 	var riskLine string
+	var scoringDetail string // full-width scoring status, shown below columns
 	if data.Scoring {
+		riskLine = fmt.Sprintf("  %s Scoring...", data.SpinnerView)
 		if data.ScoringToolCount > 0 && data.ScoringLastTool != "" {
-			riskLine = fmt.Sprintf("  %s Scoring... %s", data.SpinnerView, data.ScoringLastTool)
+			scoringDetail = fmt.Sprintf("  %s %s (%d tool calls)", data.SpinnerView, data.ScoringLastTool, data.ScoringToolCount)
 		} else if data.ScoringStatus != "" {
-			riskLine = fmt.Sprintf("  %s %s", data.SpinnerView, data.ScoringStatus)
-		} else {
-			riskLine = fmt.Sprintf("  %s Scoring with Claude...", data.SpinnerView)
+			scoringDetail = fmt.Sprintf("  %s %s", data.SpinnerView, data.ScoringStatus)
 		}
 	} else if data.ScoringErr != nil {
 		riskLine = "  " + verdictReject.Render(fmt.Sprintf("Scoring error: %v", data.ScoringErr))
@@ -217,8 +217,13 @@ func buildContent(data *RenderData, vpWidth int) string {
 	twoCol := lipgloss.JoinHorizontal(lipgloss.Top, leftCol, rightCol)
 	cols := lipgloss.JoinVertical(lipgloss.Left, title, twoCol)
 
+	if scoringDetail != "" {
+		cols = lipgloss.JoinVertical(lipgloss.Left, cols, scoringDetail)
+	}
+
 	if prBody != "" {
-		rendered := lipgloss.NewStyle().Foreground(lipgloss.Color("243")).Width(w - 4).Render("  " + prBody)
+		cols = lipgloss.JoinVertical(lipgloss.Left, cols, style.DimStyle.Render("  ── Description ──"))
+		rendered := lipgloss.NewStyle().Width(w - 4).Render("  " + prBody)
 		cols = lipgloss.JoinVertical(lipgloss.Left, cols, rendered)
 	}
 	data.BodyEndLine = strings.Count(cols, "\n") + 1
@@ -244,7 +249,13 @@ func buildContent(data *RenderData, vpWidth int) string {
 	var below []string
 
 	// Review Guide first — the actionable summary
-	if a.RiskSummary != "" || a.ReviewNotes != "" {
+	if a.Guide != nil {
+		below = append(below, style.DimStyle.Render("  ── Review Guide ──"))
+		below = append(below, renderGuideRow("Summary", a.Guide.Summary, wrapW))
+		below = append(below, renderGuideRow("Risk", a.Guide.Risk, wrapW))
+		below = append(below, renderGuideRow("Focus", a.Guide.Focus, wrapW))
+	} else if a.RiskSummary != "" || a.ReviewNotes != "" {
+		// Fallback for cached assessments without structured guide.
 		below = append(below, style.DimStyle.Render("  ── Review Guide ──"))
 		if a.RenderedNotes == "" {
 			notes := ""
@@ -269,6 +280,37 @@ func buildContent(data *RenderData, vpWidth int) string {
 		return cols
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, cols, strings.Join(below, "\n"))
+}
+
+var (
+	guideLabelStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("230")).
+			Background(lipgloss.Color("240")).
+			Padding(0, 1).
+			Width(9) // fixed width so all labels align
+	guideTextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+)
+
+const guideLabelCol = 2 + 9 + 2 // indent + label width + gap
+
+func renderGuideRow(label, text string, wrapW int) string {
+	if text == "" {
+		return ""
+	}
+	labelStr := "  " + guideLabelStyle.Render(label)
+	textW := wrapW - guideLabelCol
+	if textW < 20 {
+		textW = 20
+	}
+	wrapped := guideTextStyle.Width(textW).Render(text)
+	lines := strings.Split(wrapped, "\n")
+	result := labelStr + "  " + lines[0]
+	indent := strings.Repeat(" ", guideLabelCol)
+	for _, l := range lines[1:] {
+		result += "\n" + indent + l
+	}
+	return result
 }
 
 func renderReviewStatus(pr *github.PR) string {

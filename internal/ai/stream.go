@@ -40,6 +40,8 @@ func RunClaude(ctx context.Context, args []string, dir string, callbacks StreamC
 	prevLen := 0
 	toolCallCount := 0
 	sentInit := false
+	hadToolCalls := false
+	sentWriting := false
 
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
@@ -86,6 +88,7 @@ func RunClaude(ctx context.Context, args []string, dir string, callbacks StreamC
 					text += block.Text
 				} else if block.Type == "tool_use" && block.Name != "" {
 					toolCallCount++
+					hadToolCalls = true
 					summary := ToolSummary(block.Name, block.Input)
 					if callbacks.OnToolCall != nil {
 						callbacks.OnToolCall(toolCallCount, summary)
@@ -93,6 +96,13 @@ func RunClaude(ctx context.Context, args []string, dir string, callbacks StreamC
 				}
 			}
 			if text != "" {
+				if !sentWriting && hadToolCalls && callbacks.OnStatus != nil {
+					sentWriting = true
+					callbacks.OnStatus("Writing assessment...")
+				} else if !sentWriting && !hadToolCalls && callbacks.OnStatus != nil {
+					sentWriting = true
+					callbacks.OnStatus("Analyzing...")
+				}
 				fullResponse.Reset()
 				fullResponse.WriteString(text)
 				if len(text) > prevLen {
