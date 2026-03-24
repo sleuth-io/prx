@@ -168,10 +168,10 @@ func buildContent(data *RenderData, vpWidth int) string {
 		riskLine = fmt.Sprintf("  Risk %s %.1f  %s", bar, data.Score, RenderVerdict(data.Verdict))
 	}
 
-	leftLines := []string{meta, riskLine}
-	rightLines := []string{reviews, checks}
+	leftLines := []string{meta, riskLine, reviews, checks}
 
-	var factorDetails []string
+	// Compact risk factors for the right column (label + bar + score only)
+	var rightLines []string
 	if data.Assessment != nil {
 		maxLabelW := 0
 		for _, c := range data.Criteria {
@@ -179,23 +179,10 @@ func buildContent(data *RenderData, vpWidth int) string {
 				maxLabelW = len(c.Label)
 			}
 		}
-		prefixW := maxLabelW + 12
-		reasonW := w - prefixW
-		if reasonW < 20 {
-			reasonW = 20
-		}
-		factorDetails = append(factorDetails, style.DimStyle.Render("  ── Risk Factors ──"))
 		for _, c := range data.Criteria {
 			if f, ok := data.Assessment.Factors[c.Name]; ok {
 				padded := fmt.Sprintf("%-*s", maxLabelW, c.Label)
-				prefix := fmt.Sprintf("%s %s %d  ", boldStyle.Render("  "+padded), ScoreBar(float64(f.Score)), f.Score)
-				reason := style.DimStyle.Width(reasonW).Render(f.Reason)
-				reasonLines := strings.Split(reason, "\n")
-				factorDetails = append(factorDetails, prefix+reasonLines[0])
-				indent := strings.Repeat(" ", prefixW)
-				for _, rl := range reasonLines[1:] {
-					factorDetails = append(factorDetails, indent+rl)
-				}
+				rightLines = append(rightLines, fmt.Sprintf("  %s %s %d", boldStyle.Render(padded), ScoreBar(float64(f.Score)), f.Score))
 			}
 		}
 	}
@@ -267,9 +254,6 @@ func buildContent(data *RenderData, vpWidth int) string {
 	if keyHunkLines := renderKeyHunk(a, data.ParsedFiles, w); len(keyHunkLines) > 0 {
 		below = append(below, keyHunkLines...)
 	}
-
-	// Risk Factors — detailed breakdown
-	below = append(below, factorDetails...)
 
 	_ = wrapStyle
 	if len(below) == 0 {
