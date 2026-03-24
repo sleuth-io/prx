@@ -11,11 +11,7 @@
 
 </div>
 
-![Risky PR with review guide and key hunk](docs/pr-risky.png)
-![Chat with AI about a PR](docs/pr-chat.png)
-![Diff viewer with per-hunk annotations](docs/diff.png)
-![Bulk approve low-risk PRs](docs/bulk-approve.png)
-![Low-risk PR with dependency update](docs/pr-deps.png)
+<img src="docs/pr-chat.png" width="200"> <img src="docs/pr-risky.png" width="200"> <img src="docs/diff.png" width="200"> <img src="docs/bulk-approve.png" width="200">
 
 ## What is prx?
 
