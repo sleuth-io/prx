@@ -67,7 +67,7 @@ func forceScorePRCmd(pr *github.PR, a *app.App, program *tea.Program) tea.Cmd {
 		if err != nil {
 			return prScoredMsg{prNumber: pr.Number, err: err}
 		}
-		key := cache.Key(a.Repo, pr.Number, pr.Diff, reviewsText(pr), a.Config.Criteria)
+		key := cache.Key(a.Repo, pr.Number, pr.Diff, reviewsText(pr, a.CurrentUser), a.Config.Criteria)
 		a.Cache.Set(key, *assessment)
 		return prScoredMsg{prNumber: pr.Number, assessment: assessment}
 	}
@@ -75,7 +75,7 @@ func forceScorePRCmd(pr *github.PR, a *app.App, program *tea.Program) tea.Cmd {
 
 func scorePRCmd(pr *github.PR, a *app.App, program *tea.Program) tea.Cmd {
 	return func() tea.Msg {
-		key := cache.Key(a.Repo, pr.Number, pr.Diff, reviewsText(pr), a.Config.Criteria)
+		key := cache.Key(a.Repo, pr.Number, pr.Diff, reviewsText(pr, a.CurrentUser), a.Config.Criteria)
 
 		if assessment, ok := a.Cache.Get(key); ok {
 			logger.Info("PR #%d: cache hit", pr.Number)
@@ -196,15 +196,32 @@ func (m *Model) skillCatalog() []ai.SkillCatalog {
 	return catalog
 }
 
-func reviewsText(pr *github.PR) string {
+// reviewsText builds a stable string for cache keying. Only includes reviews
+// and comments with substantive content — bare approvals/rejections without
+// commentary don't change the risk assessment and shouldn't bust the cache.
+// The current user is always excluded since their own actions aren't risk-relevant.
+func reviewsText(pr *github.PR, excludeUser ...string) string {
+	exclude := ""
+	if len(excludeUser) > 0 {
+		exclude = excludeUser[0]
+	}
 	var sb strings.Builder
 	for _, r := range pr.Reviews {
+		if r.Author == exclude || r.Body == "" {
+			continue
+		}
 		fmt.Fprintf(&sb, "%s|%s|%s\n", r.Author, r.State, r.Body)
 	}
 	for _, c := range pr.InlineComments {
+		if c.Author == exclude {
+			continue
+		}
 		fmt.Fprintf(&sb, "%s|inline|%s|%s\n", c.Author, c.Path, c.Body)
 	}
 	for _, c := range pr.Comments {
+		if c.Author == exclude {
+			continue
+		}
 		fmt.Fprintf(&sb, "%s|comment|%s\n", c.Author, c.Body)
 	}
 	return sb.String()

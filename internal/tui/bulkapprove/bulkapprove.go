@@ -362,7 +362,12 @@ func (m Model) View() string {
 	if m.approving {
 		status += fmt.Sprintf("  %s Approving...", m.spinnerView)
 	}
-	hints := "space toggle  A all  a approve  enter view  n next  esc back  q quit"
+	var hints string
+	if len(m.items) == 0 {
+		hints = "^a show all  ^r refresh  n next  q quit"
+	} else {
+		hints = "space toggle  A all  a approve  enter view  n next  esc back  q quit"
+	}
 	gap := width - lipgloss.Width(status) - lipgloss.Width(hints) - 2
 	if gap < 1 {
 		gap = 1

@@ -205,6 +205,7 @@ func (m *Model) handleMergedPRStatus(msg mergedPRStatusMsg) (Model, tea.Cmd) {
 	var targetCard *PRCard
 	for _, card := range m.cards {
 		if card.PR.Number == msg.prNumber {
+			card.MergedStatusChecked = true
 			card.UserHasReviewed = msg.hasReview
 			card.UserHasReacted = msg.hasReaction
 			targetCard = card
@@ -216,8 +217,8 @@ func (m *Model) handleMergedPRStatus(msg mergedPRStatusMsg) (Model, tea.Cmd) {
 		m.skipToVisibleCard()
 	}
 	m.buildScrollback()
-	// Only score post-merge PRs that the user hasn't already reviewed.
-	if targetCard != nil && !msg.hasReview && !msg.hasReaction && !targetCard.Scoring {
+	// Always score post-merge PRs (results are likely cached anyway).
+	if targetCard != nil && !targetCard.Scoring {
 		targetCard.Scoring = true
 		m.scoring++
 		cmds := []tea.Cmd{
@@ -248,6 +249,7 @@ func (m *Model) markPostMergeReacted(prNumber int, reaction string) {
 }
 
 // skipToVisibleCard adjusts m.current to the nearest visible card.
+// If no visible cards remain, it enters the bulk approve screen (fireworks).
 func (m *Model) skipToVisibleCard() {
 	// Try forward first.
 	for i := m.current; i < len(m.cards); i++ {
@@ -263,6 +265,8 @@ func (m *Model) skipToVisibleCard() {
 			return
 		}
 	}
+	// No visible cards — show bulk approve (fireworks).
+	m.tryEnterBulkApprove()
 }
 
 func (m *Model) handlePRDetails(msg prDetailsFetchedMsg) (Model, tea.Cmd) {
@@ -275,7 +279,7 @@ func (m *Model) handlePRDetails(msg prDetailsFetchedMsg) (Model, tea.Cmd) {
 	if !m.startupDone {
 		fetched := m.total - m.fetching
 		cached := ""
-		key := cache.Key(m.app.Repo, pr.Number, pr.Diff, reviewsText(pr), m.app.Config.Criteria)
+		key := cache.Key(m.app.Repo, pr.Number, pr.Diff, reviewsText(pr, m.app.CurrentUser), m.app.Config.Criteria)
 		if _, ok := m.app.Cache.Get(key); ok {
 			cached = " (cached)"
 		} else {
@@ -301,6 +305,8 @@ func (m *Model) handlePRDetails(msg prDetailsFetchedMsg) (Model, tea.Cmd) {
 	if len(m.cards) == 1 {
 		m.buildScrollback()
 	}
+
+	m.refreshBulkApproveIfActive()
 
 	if isPostMerge {
 		// For merged PRs, defer scoring until we know if user already reviewed.
@@ -390,12 +396,41 @@ func (m *Model) handlePRScored(msg prScoredMsg) (Model, tea.Cmd) {
 			break
 		}
 	}
-	// Transition from startup screen once the first PR is scored (or errored).
+	// Transition from startup screen once a visible PR is scored,
+	// or all fetching/scoring is complete (including merged status checks).
 	if !m.startupDone && scoredCard != nil && !scoredCard.Scoring {
-		m.logDone()
-		m.startupDone = true
-		m.loadCurrentDiff()
-		m.resizeLayout()
+		scoredIsVisible := m.isCardVisible(scoredCard) && (!scoredCard.PostMerge || scoredCard.MergedStatusChecked)
+
+		// Count truly visible cards: post-merge cards must have their status checked.
+		settled := true
+		visibleSettled := 0
+		for _, c := range m.cards {
+			if c.PostMerge && !c.MergedStatusChecked {
+				settled = false
+				continue
+			}
+			if m.isCardVisible(c) {
+				visibleSettled++
+			}
+		}
+		allDone := m.fetching == 0 && m.scoring == 0 && settled
+
+		logger.Info("startup check: PR #%d scored, visibleSettled=%d, scoredIsVisible=%v, allDone=%v, fetching=%d, scoring=%d, settled=%v",
+			msg.prNumber, visibleSettled, scoredIsVisible, allDone, m.fetching, m.scoring, settled)
+
+		if scoredIsVisible || allDone {
+			m.logDone()
+			m.startupDone = true
+			m.resizeLayout()
+			if visibleSettled == 0 {
+				logger.Info("startup: no visible cards, entering bulk approve")
+				m.tryEnterBulkApprove()
+			} else {
+				logger.Info("startup: %d visible cards, showing first", visibleSettled)
+				m.skipToVisibleCard()
+				m.loadCurrentDiff()
+			}
+		}
 	}
 	if card := m.currentCard(); card != nil && card.PR.Number == msg.prNumber {
 		m.buildScrollback()
@@ -405,6 +440,7 @@ func (m *Model) handlePRScored(msg prScoredMsg) (Model, tea.Cmd) {
 		// Pre-warm Claude for the current visible PR once assessment is ready.
 		m.tryPreWarm(card)
 	}
+	m.refreshBulkApproveIfActive()
 	return *m, nil
 }
 
@@ -447,12 +483,12 @@ func (m *Model) handlePRRefreshed(msg prRefreshedMsg) (Model, tea.Cmd) {
 			card.PR.HeadSHA = msg.activity.HeadSHA
 			card.PR.HeadRefName = msg.activity.HeadRefName
 		}
-		oldReviewsText := reviewsText(card.PR)
+		oldReviewsText := reviewsText(card.PR, m.app.CurrentUser)
 		card.PR.Checks = msg.activity.Checks
 		card.PR.Reviews = msg.activity.Reviews
 		card.PR.InlineComments = msg.activity.InlineComments
 		card.PR.Comments = msg.activity.Comments
-		reviewsChanged := reviewsText(card.PR) != oldReviewsText
+		reviewsChanged := reviewsText(card.PR, m.app.CurrentUser) != oldReviewsText
 		if !isDone {
 			if shaChanged {
 				card.PR.Diff = msg.newDiff

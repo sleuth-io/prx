@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -334,13 +335,19 @@ func renderReviewStatus(pr *github.PR) string {
 	var parts []string
 	var changesCount, pendingCount int
 
+	// Collect approved authors sorted for stable rendering.
+	var approved []string
 	for author, state := range latest {
 		switch state {
 		case "APPROVED":
-			parts = append(parts, verdictApprove.Render("\u2713 "+author))
+			approved = append(approved, author)
 		case "CHANGES_REQUESTED":
 			changesCount++
 		}
+	}
+	sort.Strings(approved)
+	for _, author := range approved {
+		parts = append(parts, verdictApprove.Render("\u2713 "+author))
 	}
 	for _, r := range pr.RequestedReviewers {
 		if !reviewed[r] {

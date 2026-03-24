@@ -41,6 +41,28 @@ func (s *BulkApproveScene) Update(msg tea.Msg, m *Model) (Scene, tea.Cmd) {
 		return s.conv, s.conv.FocusInput()
 	case bulkapprove.QuitMsg:
 		return s, m.cleanupWorktrees()
+	case tea.KeyMsg:
+		if msg.String() == "ctrl+r" {
+			return s, tea.Batch(
+				fetchPRListCmd(m.app.Repo),
+				fetchMergedPRListCmd(m.app.Repo, m.app.CurrentUser),
+			)
+		}
+		if msg.String() == "ctrl+a" {
+			m.showAllMerged = !m.showAllMerged
+			if m.visibleCardCount() > 0 {
+				m.skipToVisibleCard()
+				m.loadCurrentDiff()
+				s.conv.BuildScrollback(m)
+				return s.conv, s.conv.FocusInput()
+			}
+			// Still no visible cards — rebuild bulk approve with updated items.
+			m.tryEnterBulkApprove()
+			return m.scene, nil
+		}
+		var cmd tea.Cmd
+		s.model, cmd = s.model.Update(msg)
+		return s, cmd
 	default:
 		var cmd tea.Cmd
 		s.model, cmd = s.model.Update(msg)

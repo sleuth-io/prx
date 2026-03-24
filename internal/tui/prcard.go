@@ -22,10 +22,11 @@ type PRCard struct {
 	parsedFiles        []*diff.File // pre-parsed diff files (nil until ready)
 	annotationsApplied bool         // true once hunk annotations have been applied
 	Chat               *conversation.ChatSession
-	PostMerge          bool   // true if this is a merged PR in post-merge review
-	UserHasReviewed    bool   // user left a review (approve/reject/comment) pre-merge
-	UserHasReacted     bool   // user already reacted (+1/-1)
-	UserReaction       string // "+1" or "-1" — set when user reacts in this session
+	PostMerge           bool   // true if this is a merged PR in post-merge review
+	MergedStatusChecked bool   // true once the merged PR status fetch has completed
+	UserHasReviewed     bool   // user left a review (approve/reject/comment) pre-merge
+	UserHasReacted      bool   // user already reacted (+1/-1)
+	UserReaction        string // "+1" or "-1" — set when user reacts in this session
 }
 
 type commentModal struct {

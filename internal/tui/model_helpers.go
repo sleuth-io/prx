@@ -50,11 +50,21 @@ func (m *Model) tryStartupTransition() {
 		}
 	}
 	if !hasVisible {
+		if len(m.cards) > 0 {
+			// Cards exist but all are reviewed — show bulk approve (fireworks).
+			logger.Info("tryStartupTransition: %d cards but none visible, entering bulk approve", len(m.cards))
+			m.logDone()
+			m.startupDone = true
+			m.resizeLayout()
+			m.tryEnterBulkApprove()
+			return
+		}
 		m.checkNoPRs()
 		return
 	}
 	// If there's at least one visible card and nothing is being fetched, transition.
 	// Scoring may still be in progress but the user can start browsing.
+	logger.Info("tryStartupTransition: %d visible cards, transitioning", m.visibleCardCount())
 	m.logDone()
 	m.startupDone = true
 	m.skipToVisibleCard()
@@ -337,4 +347,12 @@ func (m *Model) tryEnterBulkApprove() bool {
 	m.bulkApproveShown = true
 	m.scene = newBulkApproveScene(ba, m.convScene, m.width, m.height)
 	return true
+}
+
+// refreshBulkApproveIfActive rebuilds the bulk approve scene in-place
+// when card state changes (e.g. new PRs fetched, scoring complete).
+func (m *Model) refreshBulkApproveIfActive() {
+	if _, ok := m.scene.(*BulkApproveScene); ok {
+		m.tryEnterBulkApprove()
+	}
 }
