@@ -95,6 +95,10 @@ func (d *DiffView) CollapseCurrentFile() {
 		h := d.files[c.fileIdx].Hunks[c.hunkIdx]
 		if !h.Collapsed {
 			h.Collapsed = true
+			// Auto-collapse the file if it has only one hunk
+			if len(d.files[c.fileIdx].Hunks) == 1 {
+				d.files[c.fileIdx].Collapsed = true
+			}
 			d.rebuildAndStay(c)
 		}
 	case kindCommentGroup:
@@ -127,6 +131,10 @@ func (d *DiffView) ExpandCurrentFile() {
 	case kindFile:
 		if d.files[c.fileIdx].Collapsed {
 			d.files[c.fileIdx].Collapsed = false
+			// Auto-expand the hunk if the file has only one
+			if len(d.files[c.fileIdx].Hunks) == 1 {
+				d.files[c.fileIdx].Hunks[0].Collapsed = false
+			}
 			d.rebuildAndStay(c)
 		}
 	case kindHunk:
