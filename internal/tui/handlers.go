@@ -222,7 +222,7 @@ func (m *Model) handleMergedPRStatus(msg mergedPRStatusMsg) (Model, tea.Cmd) {
 		m.scoring++
 		cmds := []tea.Cmd{
 			scorePRCmd(targetCard.PR, m.app, m.program),
-			createWorktreeCmd(m.app.RepoDir, targetCard.PR.HeadRefName, targetCard.PR.Number),
+			createWorktreeCmd(m.app.RepoDir, targetCard.PR.HeadSHA, targetCard.PR.Number),
 		}
 		return *m, tea.Batch(cmds...)
 	}
@@ -314,7 +314,7 @@ func (m *Model) handlePRDetails(msg prDetailsFetchedMsg) (Model, tea.Cmd) {
 	card.Scoring = true
 	m.scoring++
 	cmds := []tea.Cmd{scorePRCmd(pr, m.app, m.program), parseDiffCmd(pr)}
-	cmds = append(cmds, createWorktreeCmd(m.app.RepoDir, pr.HeadRefName, pr.Number))
+	cmds = append(cmds, createWorktreeCmd(m.app.RepoDir, pr.HeadSHA, pr.Number))
 	cmds = append(cmds, m.fetchBodyImages(pr)...)
 	return *m, tea.Batch(cmds...)
 }

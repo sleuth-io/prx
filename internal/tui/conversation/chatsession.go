@@ -74,11 +74,10 @@ func (s *ChatSession) HandleDone(fullResponse string, err error) {
 	}
 }
 
-// HandleWorktreeReady stores the worktree path or clears streaming on error.
+// HandleWorktreeReady stores the worktree path or records an error message on failure.
 func (s *ChatSession) HandleWorktreeReady(path string, err error) {
 	if err != nil {
-		s.Status = ""
-		s.Streaming = false
+		s.HandleDone("", fmt.Errorf("failed to create worktree: %w", err))
 	} else {
 		s.WorktreePath = path
 	}

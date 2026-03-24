@@ -191,7 +191,7 @@ func (s *ConversationScene) sendChatMessage(m *Model) tea.Cmd {
 	var cmds []tea.Cmd
 	if card.Chat.NeedsWorktree() {
 		card.Chat.Status = "Creating worktree..."
-		cmds = append(cmds, createWorktreeCmd(m.app.RepoDir, card.PR.HeadRefName, card.PR.Number))
+		cmds = append(cmds, createWorktreeCmd(m.app.RepoDir, card.PR.HeadSHA, card.PR.Number))
 	} else {
 		cmd := m.startChatCmd(card)
 		cmds = append(cmds, cmd)

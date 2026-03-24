@@ -210,18 +210,19 @@ func reviewsText(pr *github.PR) string {
 	return sb.String()
 }
 
-func createWorktreeCmd(repoDir string, headRefName string, prNumber int) tea.Cmd {
+func createWorktreeCmd(repoDir string, sha string, prNumber int) tea.Cmd {
 	return func() tea.Msg {
-		logger.Info("worktree: fetching branch %s for PR #%d", headRefName, prNumber)
-		fetchCmd := exec.Command("git", "fetch", "origin", headRefName)
+		shortSHA := sha[:min(8, len(sha))]
+		logger.Info("worktree: fetching %s for PR #%d", shortSHA, prNumber)
+		fetchCmd := exec.Command("git", "fetch", "origin", sha)
 		fetchCmd.Dir = repoDir
 		if out, err := fetchCmd.CombinedOutput(); err != nil {
-			logger.Error("fetch for PR #%d branch %s: %v\n%s", prNumber, headRefName, err, string(out))
+			logger.Error("fetch for PR #%d sha %s: %v\n%s", prNumber, shortSHA, err, string(out))
 			return chatWorktreeReadyMsg{prNumber: prNumber, err: fmt.Errorf("git fetch: %w\n%s", err, string(out))}
 		}
 
 		path := fmt.Sprintf("/tmp/prx-%d-%d", prNumber, rand.Intn(100000))
-		cmd := exec.Command("git", "worktree", "add", path, "FETCH_HEAD", "--detach")
+		cmd := exec.Command("git", "worktree", "add", path, sha, "--detach")
 		cmd.Dir = repoDir
 		out, err := cmd.CombinedOutput()
 		if err != nil {
