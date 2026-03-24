@@ -69,6 +69,11 @@ type Model struct {
 	startupDone bool // true once first PR is scored and ready to view
 	startupLog  []startupEntry
 	noPRs       bool // true when no open PRs found — any key exits
+
+	// Post-merge review
+	showAllMerged  bool // when true, show all merged PRs including already-reviewed/reacted
+	openListDone   bool // true once open PR list fetch has returned
+	mergedListDone bool // true once merged PR list fetch has returned
 }
 
 func New(a *app.App) Model {
@@ -92,13 +97,13 @@ func New(a *app.App) Model {
 		imageCache: imgCache,
 		startupLog: []startupEntry{
 			{text: fmt.Sprintf("Signed in as %s", a.CurrentUser), done: true},
-			{text: fmt.Sprintf("Fetching open PRs from %s", a.Repo)},
+			{text: fmt.Sprintf("Fetching PRs from %s", a.Repo)},
 		},
 	}
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.spinner.Tick, fetchPRListCmd(m.app.Repo), m.convScene.FocusInput())
+	return tea.Batch(m.spinner.Tick, fetchPRListCmd(m.app.Repo), fetchMergedPRListCmd(m.app.Repo, m.app.CurrentUser), m.convScene.FocusInput())
 }
 
 // Update dispatches global messages first, then routes to the active scene.
@@ -192,12 +197,81 @@ func (m Model) currentCard() *PRCard {
 	return nil
 }
 
+// tryStartupTransition checks if we can exit the startup screen.
+// Called when a merged PR status arrives and no scoring was triggered.
+func (m *Model) tryStartupTransition() {
+	if m.startupDone || m.fetching > 0 {
+		return
+	}
+	// Check if any visible card exists (scored or not — unscored merged PRs are still viewable).
+	hasVisible := false
+	for _, card := range m.cards {
+		if m.isCardVisible(card) {
+			hasVisible = true
+			break
+		}
+	}
+	if !hasVisible {
+		m.checkNoPRs()
+		return
+	}
+	// If there's at least one visible card and nothing is being fetched, transition.
+	// Scoring may still be in progress but the user can start browsing.
+	m.logDone()
+	m.startupDone = true
+	m.skipToVisibleCard()
+	m.loadCurrentDiff()
+	m.resizeLayout()
+}
+
+// checkNoPRs sets noPRs=true only when both lists have returned and there are no cards or fetches pending.
+func (m *Model) checkNoPRs() {
+	if !m.openListDone || !m.mergedListDone {
+		return
+	}
+	if len(m.cards) == 0 && m.fetching == 0 {
+		m.logDone()
+		m.startupLog = append(m.startupLog, startupEntry{text: "No PRs to review", done: true})
+		m.noPRs = true
+	}
+}
+
+// isCardVisible returns whether a card should be shown in the current view.
+// Open PRs are always visible. Post-merge PRs are hidden when already reviewed/reacted
+// unless showAllMerged is toggled on.
+func (m Model) isCardVisible(card *PRCard) bool {
+	if !card.PostMerge {
+		return true
+	}
+	if m.showAllMerged {
+		return true
+	}
+	return !card.UserHasReviewed && !card.UserHasReacted
+}
+
+// visibleCardCount returns the number of currently visible cards.
+func (m Model) visibleCardCount() int {
+	n := 0
+	for _, card := range m.cards {
+		if m.isCardVisible(card) {
+			n++
+		}
+	}
+	return n
+}
+
 func (m Model) isOwnPR(card *PRCard) bool {
 	return card.PR.Author == m.app.CurrentUser
 }
 
 func (m *Model) navigatePR(delta int, s *ConversationScene) {
 	next := m.current + delta
+	for next >= 0 && next < len(m.cards) {
+		if m.isCardVisible(m.cards[next]) {
+			break
+		}
+		next += delta
+	}
 	if next < 0 || next >= len(m.cards) {
 		return
 	}
@@ -239,6 +313,8 @@ func (m *Model) buildRenderData(card *PRCard) scoring.RenderData {
 		ScoringStatus:    card.ScoringStatus,
 		ParsedFiles:      card.parsedFiles,
 		ImageCache:       m.imageCache,
+		PostMerge:        card.PostMerge,
+		UserReaction:     card.UserReaction,
 	}
 }
 
@@ -363,11 +439,13 @@ func (m *Model) hardReset() tea.Cmd {
 	m.scoring = 0
 	m.current = 0
 	m.startupDone = false
+	m.openListDone = false
+	m.mergedListDone = false
 	m.startupLog = []startupEntry{
 		{text: fmt.Sprintf("Signed in as %s", m.app.CurrentUser), done: true},
-		{text: fmt.Sprintf("Fetching open PRs from %s", m.app.Repo)},
+		{text: fmt.Sprintf("Fetching PRs from %s", m.app.Repo)},
 	}
-	cmds = append(cmds, m.spinner.Tick, fetchPRListCmd(m.app.Repo))
+	cmds = append(cmds, m.spinner.Tick, fetchPRListCmd(m.app.Repo), fetchMergedPRListCmd(m.app.Repo, m.app.CurrentUser))
 	return tea.Batch(cmds...)
 }
 
@@ -396,15 +474,28 @@ func (m *Model) buildScrollback() {
 func (m *Model) tryEnterBulkApprove() bool {
 	var items []bulkapprove.Item
 	for _, card := range m.cards {
-		if !card.Scoring && card.ScoringErr == nil && !m.isOwnPR(card) {
+		if !m.isCardVisible(card) || m.isOwnPR(card) {
+			continue
+		}
+		if card.PostMerge {
+			// Post-merge cards don't need scoring to be eligible
+			if card.Scoring {
+				continue
+			}
 			summary := ""
 			if card.Assessment != nil {
 				summary = card.Assessment.RiskSummary
 			}
-			items = append(items, bulkapprove.ItemFromCard(card.PR, card.WeightedScore, card.Verdict, summary))
+			items = append(items, bulkapprove.ItemFromCard(card.PR, card.WeightedScore, card.Verdict, summary, true))
+		} else if !card.Scoring && card.ScoringErr == nil {
+			summary := ""
+			if card.Assessment != nil {
+				summary = card.Assessment.RiskSummary
+			}
+			items = append(items, bulkapprove.ItemFromCard(card.PR, card.WeightedScore, card.Verdict, summary, false))
 		}
 	}
-	ba := bulkapprove.New(m.app.Repo, items, m.width, m.height)
+	ba := bulkapprove.New(m.app.Repo, m.app.CurrentUser, items, m.width, m.height)
 	m.bulkApproveShown = true
 	m.scene = newBulkApproveScene(ba, m.convScene, m.width, m.height)
 	return true

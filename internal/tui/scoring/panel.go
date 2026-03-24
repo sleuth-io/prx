@@ -47,6 +47,8 @@ type RenderData struct {
 	ParsedFiles      []*diff.File
 	ImageCache       *imgrender.Cache
 	BodyEndLine      int // set by buildContent: line after body text (for image placement)
+	PostMerge        bool
+	UserReaction     string // "+1" or "-1" if user reacted this session
 }
 
 // WeightedScore calculates the weighted score from an assessment.
@@ -141,12 +143,27 @@ func buildContent(data *RenderData, vpWidth int) string {
 	leftW := w * 2 / 5
 	rightW := w - leftW
 
+	stateBadge := ""
+	switch pr.State {
+	case "MERGED":
+		stateBadge = mergedBanner.Render("MERGED") + " "
+	case "CLOSED":
+		stateBadge = closedBanner.Render("CLOSED") + " "
+	}
 	title := lipgloss.NewStyle().Width(w - 2).Render(
-		fmt.Sprintf("  %s  %s", boldStyle.Render(fmt.Sprintf("#%d", pr.Number)), pr.Title))
+		fmt.Sprintf("  %s%s  %s", stateBadge, boldStyle.Render(fmt.Sprintf("#%d", pr.Number)), pr.Title))
 
-	meta := fmt.Sprintf("  %s", style.DimStyle.Render(fmt.Sprintf("by %s  \u00b7  +%d/-%d  \u00b7  %d files  \u00b7  %s",
-		pr.Author, pr.Additions, pr.Deletions, pr.FilesChanged, pr.CreatedAt[:10])))
-	reviews := "  " + renderReviewStatus(pr)
+	meta := fmt.Sprintf("  %s", style.DimStyle.Render(fmt.Sprintf("by %s  \u00b7  %s",
+		pr.Author, pr.CreatedAt[:10])))
+	diffStats := fmt.Sprintf("  %s", style.DimStyle.Render(fmt.Sprintf("+%d/-%d  \u00b7  %d files",
+		pr.Additions, pr.Deletions, pr.FilesChanged)))
+	reviews := "  Approvals: " + renderReviewStatus(pr)
+	switch data.UserReaction {
+	case "+1":
+		reviews += "  " + verdictApprove.Render("\U0001f44d You approved")
+	case "-1":
+		reviews += "  " + verdictReject.Render("\U0001f44e You flagged")
+	}
 	checks := "  " + renderChecksStatus(pr)
 
 	rawBody := strings.TrimSpace(strings.ReplaceAll(pr.Body, "\r\n", "\n"))
@@ -168,7 +185,7 @@ func buildContent(data *RenderData, vpWidth int) string {
 		riskLine = fmt.Sprintf("  Risk %s %.1f  %s", bar, data.Score, RenderVerdict(data.Verdict))
 	}
 
-	leftLines := []string{meta, riskLine, reviews, checks}
+	leftLines := []string{meta, diffStats, riskLine, reviews, checks}
 
 	// Compact risk factors for the right column (label + bar + score only)
 	var rightLines []string
@@ -198,15 +215,7 @@ func buildContent(data *RenderData, vpWidth int) string {
 	rightCol := lipgloss.NewStyle().Width(rightW).Render(strings.Join(rightLines, "\n"))
 
 	twoCol := lipgloss.JoinHorizontal(lipgloss.Top, leftCol, rightCol)
-	var cols string
-	switch pr.State {
-	case "MERGED":
-		cols = lipgloss.JoinVertical(lipgloss.Left, mergedBanner.Render("  MERGED  "), title, twoCol)
-	case "CLOSED":
-		cols = lipgloss.JoinVertical(lipgloss.Left, closedBanner.Render("  CLOSED  "), title, twoCol)
-	default:
-		cols = lipgloss.JoinVertical(lipgloss.Left, title, twoCol)
-	}
+	cols := lipgloss.JoinVertical(lipgloss.Left, title, twoCol)
 
 	if prBody != "" {
 		rendered := lipgloss.NewStyle().Foreground(lipgloss.Color("243")).Width(w - 4).Render("  " + prBody)
@@ -301,7 +310,7 @@ func renderReviewStatus(pr *github.PR) string {
 		parts = append(parts, verdictReject.Render(fmt.Sprintf("\u2717 %d", changesCount)))
 	}
 	if pendingCount > 0 {
-		parts = append(parts, verdictReview.Render(fmt.Sprintf("? %d pending", pendingCount)))
+		parts = append(parts, verdictReview.Render(fmt.Sprintf("%d pending", pendingCount)))
 	}
 
 	if len(parts) == 0 {

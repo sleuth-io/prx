@@ -36,9 +36,11 @@ type prScoredMsg struct {
 }
 
 const (
-	actionMerge          = "merge"
-	actionApprove        = "approve"
-	actionRequestChanges = "request-changes"
+	actionMerge            = "merge"
+	actionApprove          = "approve"
+	actionRequestChanges   = "request-changes"
+	actionPostMergeApprove = "post-merge-approve"
+	actionPostMergeFlag    = "post-merge-flag"
 )
 
 type actionDoneMsg struct {
@@ -118,4 +120,16 @@ type imageFetchedMsg struct {
 	prNumber int
 	url      string
 	err      error
+}
+
+type mergedPRListFetchedMsg struct {
+	rawPRs []map[string]any
+	err    error
+}
+
+type mergedPRStatusMsg struct {
+	prNumber    int
+	hasReview   bool
+	hasReaction bool
+	err         error
 }

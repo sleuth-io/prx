@@ -38,6 +38,10 @@ func (m *Model) updateReview(msg tea.Msg) (Model, tea.Cmd) {
 		return m.handlePRScored(msg)
 	case prRefreshedMsg:
 		return m.handlePRRefreshed(msg)
+	case mergedPRListFetchedMsg:
+		return m.handleMergedPRList(msg)
+	case mergedPRStatusMsg:
+		return m.handleMergedPRStatus(msg)
 	case imageFetchedMsg:
 		return m.handleImageFetched(msg)
 	case commentSubmittedMsg:
@@ -132,6 +136,7 @@ func (m *Model) handleConfigReload(_ perm.ConfigReloadMsg) (Model, tea.Cmd) {
 // ---------------------------------------------------------------------------
 
 func (m *Model) handlePRList(msg prListFetchedMsg) (Model, tea.Cmd) {
+	m.openListDone = true
 	if msg.err != nil {
 		m.err = msg.err
 		return *m, nil
@@ -146,18 +151,15 @@ func (m *Model) handlePRList(msg prListFetchedMsg) (Model, tea.Cmd) {
 			newRaws = append(newRaws, raw)
 		}
 	}
-	if len(m.cards) == 0 {
+	if len(m.cards) == 0 && !m.mergedListDone {
+		// First open list result — set total but don't finalize yet (merged list pending).
 		m.total = len(msg.rawPRs)
 		m.fetching = len(newRaws)
 	} else {
 		m.fetching += len(newRaws)
 	}
 	if len(newRaws) == 0 {
-		m.logDone()
-		if len(msg.rawPRs) == 0 {
-			m.startupLog = append(m.startupLog, startupEntry{text: "No open PRs found", done: true})
-			m.noPRs = true
-		}
+		m.checkNoPRs()
 		return *m, nil
 	}
 	m.logStep(fmt.Sprintf("Found %d open PRs, loading details", len(msg.rawPRs)))
@@ -166,6 +168,104 @@ func (m *Model) handlePRList(msg prListFetchedMsg) (Model, tea.Cmd) {
 		cmds[i] = fetchPRDetailsCmd(raw, m.app)
 	}
 	return *m, tea.Batch(cmds...)
+}
+
+func (m *Model) handleMergedPRList(msg mergedPRListFetchedMsg) (Model, tea.Cmd) {
+	m.mergedListDone = true
+	if msg.err != nil {
+		logger.Error("fetching merged PRs: %v", msg.err)
+		m.checkNoPRs()
+		return *m, nil
+	}
+	if len(msg.rawPRs) == 0 {
+		m.checkNoPRs()
+		return *m, nil
+	}
+	existing := make(map[int]bool, len(m.cards))
+	for _, card := range m.cards {
+		existing[card.PR.Number] = true
+	}
+	var newRaws []map[string]any
+	for _, raw := range msg.rawPRs {
+		if num := int(raw["number"].(float64)); !existing[num] {
+			newRaws = append(newRaws, raw)
+		}
+	}
+	if len(newRaws) == 0 {
+		return *m, nil
+	}
+	m.total += len(newRaws)
+	m.fetching += len(newRaws)
+	m.logStep(fmt.Sprintf("Found %d merged PRs, loading details", len(newRaws)))
+	cmds := make([]tea.Cmd, len(newRaws))
+	for i, raw := range newRaws {
+		cmds[i] = fetchPRDetailsCmd(raw, m.app)
+	}
+	return *m, tea.Batch(cmds...)
+}
+
+func (m *Model) handleMergedPRStatus(msg mergedPRStatusMsg) (Model, tea.Cmd) {
+	var targetCard *PRCard
+	for _, card := range m.cards {
+		if card.PR.Number == msg.prNumber {
+			card.UserHasReviewed = msg.hasReview
+			card.UserHasReacted = msg.hasReaction
+			targetCard = card
+			break
+		}
+	}
+	// If current card just became hidden, navigate to next visible card.
+	if card := m.currentCard(); card != nil && !m.isCardVisible(card) {
+		m.skipToVisibleCard()
+	}
+	m.buildScrollback()
+	// Only score post-merge PRs that the user hasn't already reviewed.
+	if targetCard != nil && !msg.hasReview && !msg.hasReaction && !targetCard.Scoring {
+		targetCard.Scoring = true
+		m.scoring++
+		cmds := []tea.Cmd{
+			scorePRCmd(targetCard.PR, m.app, m.program),
+			createWorktreeCmd(m.app.RepoDir, targetCard.PR.HeadRefName, targetCard.PR.Number),
+		}
+		return *m, tea.Batch(cmds...)
+	}
+	// If all visible merged PRs are already reviewed and nothing is scoring,
+	// we may need to transition out of startup.
+	m.tryStartupTransition()
+	return *m, nil
+}
+
+// markPostMergeReacted marks a post-merge card as reacted and navigates away if hidden.
+func (m *Model) markPostMergeReacted(prNumber int, reaction string) {
+	for _, card := range m.cards {
+		if card.PR.Number == prNumber {
+			card.UserHasReacted = true
+			card.UserReaction = reaction
+			break
+		}
+	}
+	if card := m.currentCard(); card != nil && !m.isCardVisible(card) {
+		m.skipToVisibleCard()
+		m.loadCurrentDiff()
+	}
+}
+
+// skipToVisibleCard adjusts m.current to the nearest visible card.
+func (m *Model) skipToVisibleCard() {
+	// Try forward first.
+	for i := m.current; i < len(m.cards); i++ {
+		if m.isCardVisible(m.cards[i]) {
+			m.current = i
+			return
+		}
+	}
+	// Then backward.
+	for i := m.current - 1; i >= 0; i-- {
+		if m.isCardVisible(m.cards[i]) {
+			m.current = i
+			return
+		}
+	}
 }
 
 func (m *Model) handlePRDetails(msg prDetailsFetchedMsg) (Model, tea.Cmd) {
@@ -186,7 +286,8 @@ func (m *Model) handlePRDetails(msg prDetailsFetchedMsg) (Model, tea.Cmd) {
 		}
 		m.logStep(fmt.Sprintf("Loaded PR #%d: %s%s (%d/%d)", pr.Number, truncate(pr.Title, 40), cached, fetched, m.total))
 	}
-	card := &PRCard{PR: pr, Scoring: true, Chat: &conversation.ChatSession{
+	isPostMerge := pr.State == "MERGED"
+	card := &PRCard{PR: pr, PostMerge: isPostMerge, Chat: &conversation.ChatSession{
 		Status: "Preparing chat...",
 	}}
 	// Insert sorted by PR number descending (newest first).
@@ -200,14 +301,23 @@ func (m *Model) handlePRDetails(msg prDetailsFetchedMsg) (Model, tea.Cmd) {
 	if m.fetching == 0 && idx <= m.current && len(m.cards) > 1 {
 		m.current++
 	}
-	m.scoring++
 	if len(m.cards) == 1 {
 		m.buildScrollback()
 	}
+
+	if isPostMerge {
+		// For merged PRs, defer scoring until we know if user already reviewed.
+		// Only parse diff + fetch status for now.
+		cmds := []tea.Cmd{parseDiffCmd(pr), fetchMergedPRStatusCmd(m.app.Repo, pr.Number, m.app.CurrentUser)}
+		cmds = append(cmds, m.fetchBodyImages(pr)...)
+		return *m, tea.Batch(cmds...)
+	}
+
+	// Open PRs: score + create worktree immediately.
+	card.Scoring = true
+	m.scoring++
 	cmds := []tea.Cmd{scorePRCmd(pr, m.app, m.program), parseDiffCmd(pr)}
-	// Pre-create worktree eagerly so chat doesn't block on it later.
 	cmds = append(cmds, createWorktreeCmd(m.app.RepoDir, pr.HeadRefName, pr.Number))
-	// Fetch images from PR body in background
 	cmds = append(cmds, m.fetchBodyImages(pr)...)
 	return *m, tea.Batch(cmds...)
 }
@@ -322,7 +432,7 @@ func (m *Model) handlePRRefreshed(msg prRefreshedMsg) (Model, tea.Cmd) {
 		if msg.activity.MergeStateStatus != "" {
 			card.PR.MergeStateStatus = msg.activity.MergeStateStatus
 		}
-		isDone := card.PR.State == "MERGED" || card.PR.State == "CLOSED"
+		isDone := (card.PR.State == "MERGED" && !card.PostMerge) || card.PR.State == "CLOSED"
 		if isDone && !isCurrent {
 			m.cards = append(m.cards[:i], m.cards[i+1:]...)
 			if m.current > i {

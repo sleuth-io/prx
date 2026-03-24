@@ -73,11 +73,58 @@ func commands() []Command {
 					return s, nil, true
 				}
 				repo, num := m.app.Repo, card.PR.Number
+				if card.PostMerge {
+					s.confirm = &confirmDialog{
+						description:  fmt.Sprintf("Approve (post-merge) PR #%d?", num),
+						actionStatus: "Approving post-merge…",
+						cmd:          addReactionCmd(repo, num, "+1", actionPostMergeApprove, m.app.CurrentUser),
+					}
+					return s, nil, true
+				}
 				s.confirm = &confirmDialog{
 					description:  fmt.Sprintf("Approve PR #%d?", num),
 					actionStatus: "Approving…",
 					cmd:          approveCmd(repo, num),
 				}
+				return s, nil, true
+			},
+		},
+		{
+			Name:        "flag",
+			Description: "Flag a merged PR (thumbs down)",
+			Scope:       ScopePR,
+			Run: func(s *ConversationScene, m *Model) (Scene, tea.Cmd, bool) {
+				card := m.currentCard()
+				if card == nil || !card.PostMerge {
+					return s, nil, true
+				}
+				repo, num := m.app.Repo, card.PR.Number
+				s.confirm = &confirmDialog{
+					description:  fmt.Sprintf("Flag PR #%d?", num),
+					actionStatus: "Flagging…",
+					cmd:          addReactionCmd(repo, num, "-1", actionPostMergeFlag, m.app.CurrentUser),
+				}
+				return s, nil, true
+			},
+		},
+		{
+			Name:        "toggle-merged",
+			Description: "Toggle showing all merged PRs",
+			KeyBinding:  "ctrl+a",
+			Scope:       ScopeGlobal,
+			Run: func(s *ConversationScene, m *Model) (Scene, tea.Cmd, bool) {
+				m.showAllMerged = !m.showAllMerged
+				if m.showAllMerged {
+					s.actionStatus = "Showing all merged PRs"
+				} else {
+					s.actionStatus = "Hiding reviewed merged PRs"
+				}
+				// If current card is now hidden, move to nearest visible.
+				if card := m.currentCard(); card != nil && !m.isCardVisible(card) {
+					m.skipToVisibleCard()
+					m.loadCurrentDiff()
+				}
+				s.BuildScrollback(m)
 				return s, nil, true
 			},
 		},
@@ -166,7 +213,7 @@ func commands() []Command {
 				}
 				s.actionStatus = "Refreshing…"
 				s.actionDone = false
-				return s, tea.Batch(refreshPRCmd(card.PR, m.app), fetchPRListCmd(m.app.Repo)), true
+				return s, tea.Batch(refreshPRCmd(card.PR, m.app), fetchPRListCmd(m.app.Repo), fetchMergedPRListCmd(m.app.Repo, m.app.CurrentUser)), true
 			},
 		},
 		{

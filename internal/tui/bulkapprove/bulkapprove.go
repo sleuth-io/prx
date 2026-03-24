@@ -39,10 +39,11 @@ type Item struct {
 	WeightedScore float64
 	Verdict       string
 	RiskSummary   string
+	PostMerge     bool
 }
 
 // ItemFromCard builds an Item from a PRCard's exported fields.
-func ItemFromCard(pr *github.PR, score float64, verdict string, riskSummary string) Item {
+func ItemFromCard(pr *github.PR, score float64, verdict string, riskSummary string, postMerge bool) Item {
 	return Item{
 		Number:        pr.Number,
 		Title:         pr.Title,
@@ -54,6 +55,7 @@ func ItemFromCard(pr *github.PR, score float64, verdict string, riskSummary stri
 		WeightedScore: score,
 		Verdict:       verdict,
 		RiskSummary:   riskSummary,
+		PostMerge:     postMerge,
 	}
 }
 
@@ -88,6 +90,7 @@ type Model struct {
 	cursor      int
 	approving   bool
 	repo        string
+	currentUser string
 	width       int
 	height      int
 	spinnerView string
@@ -95,17 +98,18 @@ type Model struct {
 }
 
 // New creates a new bulk approve model. Items with "approve" verdict are pre-checked.
-func New(repo string, items []Item, width, height int) Model {
+func New(repo string, currentUser string, items []Item, width, height int) Model {
 	sel := make(map[int]bool, len(items))
 	for _, item := range items {
 		sel[item.Number] = item.Verdict == "approve"
 	}
 	return Model{
-		items:    items,
-		selected: sel,
-		repo:     repo,
-		width:    width,
-		height:   height,
+		items:       items,
+		selected:    sel,
+		repo:        repo,
+		currentUser: currentUser,
+		width:       width,
+		height:      height,
 	}
 }
 
@@ -183,15 +187,15 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			}
 		}
 	case "a":
-		var toApprove []int
+		var toApprove []Item
 		for _, item := range m.items {
 			if m.selected[item.Number] && !m.isApproved(item.Number) {
-				toApprove = append(toApprove, item.Number)
+				toApprove = append(toApprove, item)
 			}
 		}
 		if len(toApprove) > 0 {
 			m.approving = true
-			return m, approveCmd(m.repo, toApprove)
+			return m, approveCmd(m.repo, m.currentUser, toApprove)
 		}
 	case "enter":
 		if m.cursor < len(m.items) {
@@ -214,12 +218,17 @@ func (m Model) isApproved(prNumber int) bool {
 	return done
 }
 
-func approveCmd(repo string, prNumbers []int) tea.Cmd {
+func approveCmd(repo, currentUser string, items []Item) tea.Cmd {
 	return func() tea.Msg {
-		results := make([]approveResult, len(prNumbers))
-		for i, num := range prNumbers {
-			err := github.ApprovePR(repo, num)
-			results[i] = approveResult{prNumber: num, err: err}
+		results := make([]approveResult, len(items))
+		for i, item := range items {
+			var err error
+			if item.PostMerge {
+				err = github.SetReaction(repo, item.Number, "+1", currentUser)
+			} else {
+				err = github.ApprovePR(repo, item.Number)
+			}
+			results[i] = approveResult{prNumber: item.Number, err: err}
 		}
 		return approveDoneMsg{results: results}
 	}
@@ -287,14 +296,25 @@ func (m Model) View() string {
 		scoreStr := fmt.Sprintf("%.1f", item.WeightedScore)
 		verdict := scoring.RenderVerdict(item.Verdict)
 
+		mergedTag := ""
+		if item.PostMerge {
+			mergedTag = lipgloss.NewStyle().Bold(true).
+				Foreground(lipgloss.Color("230")).
+				Background(lipgloss.Color("57")).
+				Render(" MERGED ") + " "
+		}
+
 		maxTitleW := width - 40
+		if item.PostMerge {
+			maxTitleW -= 10
+		}
 		title := item.Title
 		if len(title) > maxTitleW && maxTitleW > 3 {
 			title = title[:maxTitleW-3] + "..."
 		}
 
-		line1 := fmt.Sprintf("  %s  #%-4d  %-*s  %s %s %s",
-			checkbox, num, maxTitleW, title, bar, scoreStr, verdict)
+		line1 := fmt.Sprintf("  %s  #%-4d  %s%-*s  %s %s %s",
+			checkbox, num, mergedTag, maxTitleW, title, bar, scoreStr, verdict)
 
 		// Line 2: metadata.
 		date := item.CreatedAt

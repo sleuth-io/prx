@@ -6,9 +6,17 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/sleuth-io/prx/internal/logger"
 )
+
+// Reaction represents a GitHub reaction on an issue/PR.
+type Reaction struct {
+	ID      int
+	User    string
+	Content string // "+1", "-1", "laugh", "confused", "heart", "hooray", "rocket", "eyes"
+}
 
 type CheckStatus struct {
 	Name       string
@@ -298,6 +306,11 @@ func FetchPRDetails(repo string, raw map[string]any) (*PR, error) {
 		mergeStateStatus = m
 	}
 
+	state := "OPEN"
+	if s, ok := raw["state"].(string); ok && s != "" {
+		state = s
+	}
+
 	return &PR{
 		Number:             num,
 		Title:              fmt.Sprintf("%v", raw["title"]),
@@ -311,6 +324,7 @@ func FetchPRDetails(repo string, raw map[string]any) (*PR, error) {
 		Body:               body,
 		HeadSHA:            fmt.Sprintf("%v", raw["headRefOid"]),
 		HeadRefName:        fmt.Sprintf("%v", raw["headRefName"]),
+		State:              state,
 		MergeStateStatus:   mergeStateStatus,
 		Checks:             checks,
 		Reviews:            reviews,
@@ -537,13 +551,19 @@ func getReviews(repo string, number int) ([]ReviewComment, error) {
 	var reviews []ReviewComment
 	for _, r := range raw {
 		body := fmt.Sprintf("%v", r["body"])
-		if body == "" || body == "<nil>" {
+		if body == "<nil>" {
+			body = ""
+		}
+		state := fmt.Sprintf("%v", r["state"])
+		// Keep reviews with a meaningful state (APPROVED, CHANGES_REQUESTED, etc.)
+		// even if the body is empty. Only skip empty-body COMMENTED reviews.
+		if body == "" && (state == "" || state == "COMMENTED" || state == "PENDING") {
 			continue
 		}
 		reviews = append(reviews, ReviewComment{
 			Author:      fmt.Sprintf("%v", r["author"]),
 			Body:        body,
-			State:       fmt.Sprintf("%v", r["state"]),
+			State:       state,
 			SubmittedAt: fmt.Sprintf("%v", r["submitted_at"]),
 		})
 	}
@@ -643,4 +663,146 @@ func ApprovePR(repo string, number int) error {
 func RequestChanges(repo string, number int, body string) error {
 	return exec.Command("gh", "pr", "review", fmt.Sprintf("%d", number),
 		"--repo", repo, "--request-changes", "--body", body).Run()
+}
+
+// ListMergedPRsMeta returns lightweight metadata for recently merged PRs (no diffs).
+// Excludes PRs authored by currentUser.
+func ListMergedPRsMeta(repo, currentUser string, since time.Time) ([]map[string]any, error) {
+	sinceStr := since.Format("2006-01-02")
+	logger.Info("listing merged PRs for %s since %s", repo, sinceStr)
+	out, err := exec.Command("gh", "pr", "list",
+		"--repo", repo,
+		"--state", "merged",
+		"--search", fmt.Sprintf("merged:>%s", sinceStr),
+		"--json", "number,title,author,url,createdAt,additions,deletions,files,body,reviewRequests,headRefOid,headRefName,mergeStateStatus,state",
+		"--limit", "50",
+	).Output()
+	if err != nil {
+		return nil, fmt.Errorf("gh pr list (merged): %w", err)
+	}
+	var rawPRs []map[string]any
+	if err := json.Unmarshal(out, &rawPRs); err != nil {
+		return nil, fmt.Errorf("parsing merged pr list: %w", err)
+	}
+	// Filter out own PRs.
+	var filtered []map[string]any
+	for _, raw := range rawPRs {
+		if a, ok := raw["author"].(map[string]any); ok {
+			if fmt.Sprintf("%v", a["login"]) == currentUser {
+				continue
+			}
+		}
+		filtered = append(filtered, raw)
+	}
+	return filtered, nil
+}
+
+// GetReactions returns all reactions on a PR (GitHub treats PRs as issues for reactions).
+func GetReactions(repo string, number int) ([]Reaction, error) {
+	out, err := exec.Command("gh", "api",
+		fmt.Sprintf("repos/%s/issues/%d/reactions", repo, number),
+		"--jq", `[.[] | {id: .id, user: .user.login, content: .content}]`,
+	).Output()
+	if err != nil || len(strings.TrimSpace(string(out))) == 0 {
+		return nil, nil
+	}
+	var raw []map[string]any
+	if err := json.Unmarshal(out, &raw); err != nil {
+		return nil, fmt.Errorf("parsing reactions: %w", err)
+	}
+	var reactions []Reaction
+	for _, r := range raw {
+		id := 0
+		if v, ok := r["id"].(float64); ok {
+			id = int(v)
+		}
+		reactions = append(reactions, Reaction{
+			ID:      id,
+			User:    fmt.Sprintf("%v", r["user"]),
+			Content: fmt.Sprintf("%v", r["content"]),
+		})
+	}
+	return reactions, nil
+}
+
+// AddReaction adds an emoji reaction to a PR.
+// content should be "+1", "-1", "laugh", "confused", "heart", "hooray", "rocket", or "eyes".
+func AddReaction(repo string, number int, content string) error {
+	out, err := exec.Command("gh", "api",
+		fmt.Sprintf("repos/%s/issues/%d/reactions", repo, number),
+		"--method", "POST",
+		"-f", fmt.Sprintf("content=%s", content),
+	).CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg != "" {
+			return fmt.Errorf("add reaction: %s", msg)
+		}
+		return fmt.Errorf("add reaction: %w", err)
+	}
+	return nil
+}
+
+// RemoveReaction deletes a reaction by ID.
+func RemoveReaction(repo string, number int, reactionID int) error {
+	_, err := exec.Command("gh", "api",
+		fmt.Sprintf("repos/%s/issues/%d/reactions/%d", repo, number, reactionID),
+		"--method", "DELETE",
+	).CombinedOutput()
+	return err
+}
+
+// SetReaction ensures the user has exactly one +1 or -1 reaction on a PR.
+// Removes any existing +1/-1 from the user first, then adds the new one.
+func SetReaction(repo string, number int, content string, currentUser string) error {
+	reactions, err := GetReactions(repo, number)
+	if err != nil {
+		return fmt.Errorf("get reactions: %w", err)
+	}
+	for _, r := range reactions {
+		if r.User == currentUser && (r.Content == "+1" || r.Content == "-1") {
+			if r.Content == content {
+				return nil // already has the desired reaction
+			}
+			if err := RemoveReaction(repo, number, r.ID); err != nil {
+				return fmt.Errorf("remove old reaction: %w", err)
+			}
+		}
+	}
+	return AddReaction(repo, number, content)
+}
+
+// FetchPRReviewAndReactionStatus checks whether a user has left any review
+// or any reaction (+1/-1) on a PR. Both checks run concurrently.
+func FetchPRReviewAndReactionStatus(repo string, number int, currentUser string) (hasReview bool, hasReaction bool, err error) {
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		reviews, e := getReviews(repo, number)
+		if e != nil {
+			return
+		}
+		for _, r := range reviews {
+			if r.Author == currentUser {
+				hasReview = true
+				return
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		reactions, e := GetReactions(repo, number)
+		if e != nil {
+			return
+		}
+		for _, r := range reactions {
+			if r.User == currentUser && (r.Content == "+1" || r.Content == "-1") {
+				hasReaction = true
+				return
+			}
+		}
+	}()
+	wg.Wait()
+	return
 }

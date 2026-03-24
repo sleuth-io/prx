@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/sleuth-io/prx/internal/ai"
@@ -151,6 +152,28 @@ func openURLCmd(url string) tea.Cmd {
 		}
 		_ = cmd.Start()
 		return nil
+	}
+}
+
+func fetchMergedPRListCmd(repo, currentUser string) tea.Cmd {
+	return func() tea.Msg {
+		since := time.Now().AddDate(0, 0, -7)
+		rawPRs, err := github.ListMergedPRsMeta(repo, currentUser, since)
+		return mergedPRListFetchedMsg{rawPRs: rawPRs, err: err}
+	}
+}
+
+func fetchMergedPRStatusCmd(repo string, number int, currentUser string) tea.Cmd {
+	return func() tea.Msg {
+		hasReview, hasReaction, err := github.FetchPRReviewAndReactionStatus(repo, number, currentUser)
+		return mergedPRStatusMsg{prNumber: number, hasReview: hasReview, hasReaction: hasReaction, err: err}
+	}
+}
+
+func addReactionCmd(repo string, number int, content, action, currentUser string) tea.Cmd {
+	return func() tea.Msg {
+		err := github.SetReaction(repo, number, content, currentUser)
+		return actionDoneMsg{pr: number, action: action, err: err}
 	}
 }
 

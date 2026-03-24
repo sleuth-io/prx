@@ -350,6 +350,12 @@ func (s *ConversationScene) handleActionDone(msg actionDoneMsg, m *Model) (Scene
 		s.actionStatus = fmt.Sprintf("Approved PR #%d", msg.pr)
 	case actionRequestChanges:
 		s.actionStatus = fmt.Sprintf("Requested changes on PR #%d", msg.pr)
+	case actionPostMergeApprove:
+		s.actionStatus = fmt.Sprintf("Approved post-merge PR #%d \U0001f44d", msg.pr)
+		m.markPostMergeReacted(msg.pr, "+1")
+	case actionPostMergeFlag:
+		s.actionStatus = fmt.Sprintf("Flagged post-merge PR #%d \U0001f44e", msg.pr)
+		m.markPostMergeReacted(msg.pr, "-1")
 	default:
 		s.actionStatus = fmt.Sprintf("%s done", msg.action)
 	}
@@ -467,7 +473,14 @@ func (s *ConversationScene) renderFooter(m *Model) string {
 	if width == 0 {
 		width = 80
 	}
-	status := fmt.Sprintf("prx  PR %d/%d", m.current+1, len(m.cards))
+	visible := m.visibleCardCount()
+	visIdx := 0
+	for i := 0; i < m.current && i < len(m.cards); i++ {
+		if m.isCardVisible(m.cards[i]) {
+			visIdx++
+		}
+	}
+	status := fmt.Sprintf("prx  PR %d/%d", visIdx+1, visible)
 	if s.actionStatus != "" && s.actionDone {
 		status += fmt.Sprintf("  %s", s.actionStatus)
 	} else if s.actionStatus != "" {
@@ -476,7 +489,29 @@ func (s *ConversationScene) renderFooter(m *Model) string {
 		status += fmt.Sprintf("  %s %d loading", m.spinner.View(), pending)
 	}
 
-	hints := "^d diff  ^b bulk  ^n/^p nav  /approve  /merge  /comment  ^q quit"
+	var hints string
+	card := m.currentCard()
+	if card != nil && card.PostMerge {
+		toggleHint := "^a show all"
+		if m.showAllMerged {
+			toggleHint = "^a hide reviewed"
+		}
+		hints = fmt.Sprintf("^d diff  ^b bulk  ^n/^p nav  /approve  /flag  %s  ^q quit", toggleHint)
+	} else {
+		toggleHint := ""
+		// Only show toggle hint if there are any post-merge cards.
+		for _, c := range m.cards {
+			if c.PostMerge {
+				if m.showAllMerged {
+					toggleHint = "  ^a hide reviewed"
+				} else {
+					toggleHint = "  ^a show all"
+				}
+				break
+			}
+		}
+		hints = fmt.Sprintf("^d diff  ^b bulk  ^n/^p nav  /approve  /merge  /comment%s  ^q quit", toggleHint)
+	}
 	gap := width - lipgloss.Width(status) - lipgloss.Width(hints) - 2
 	if gap < 1 {
 		gap = 1
