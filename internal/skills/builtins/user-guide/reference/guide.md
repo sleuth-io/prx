@@ -6,7 +6,7 @@
 |-------|---------|-------|------|
 | **Conversation** | Primary chat + review interface | Default | — |
 | **Diff Overlay** | Full-screen diff viewer with comments | `ctrl+d` or `/diff` | `q` or `esc` |
-| **Bulk Approve** | Approve multiple low-risk PRs at once | `/bulk` | `n` or `esc` |
+| **Bulk Approve** | Approve multiple low-risk PRs at once | `ctrl+b` or `/bulk` | `n` or `esc` |
 
 ## Keyboard Shortcuts
 
@@ -17,9 +17,11 @@
 | `enter` | Send chat message or run slash command |
 | `esc` | Cancel streaming response, or clear input |
 | `ctrl+d` | Open diff overlay |
+| `ctrl+b` | Open bulk approve |
 | `ctrl+n` | Next PR |
 | `ctrl+p` | Previous PR |
 | `ctrl+r` | Refresh current PR data from GitHub |
+| `ctrl+a` | Toggle showing all merged PRs |
 | `ctrl+q` | Quit prx |
 
 ### Diff Overlay
@@ -34,7 +36,7 @@
 | `shift+right` / `>` | Expand all items |
 | `?` | Quote current line/hunk and return to chat |
 | `c` | Open comment modal on current line |
-| `q` / `esc` | Return to conversation |
+| `q` / `esc` / `ctrl+q` | Return to conversation |
 
 ### Comment Modal (in diff overlay)
 
@@ -54,7 +56,7 @@
 | `a` | Approve all selected PRs |
 | `enter` | View selected PR in conversation |
 | `n` / `esc` | Return to conversation |
-| `q` | Quit prx |
+| `q` / `ctrl+q` | Quit prx |
 
 ## Slash Commands
 
@@ -68,8 +70,10 @@ Type in the conversation input bar and press enter:
 | `/approve` | Approve the PR (with confirmation) |
 | `/merge` | Merge the PR (with confirmation, own PRs only) |
 | `/reject` | Request changes (with confirmation) |
+| `/flag` | Flag a merged PR with thumbs-down (post-merge only) |
 | `/comment` | Open diff overlay with comment modal |
 | `/bulk` | Open bulk approve screen |
+| `/toggle-merged` | Toggle showing all merged PRs |
 | `/refresh` | Refresh PR data and check for new PRs |
 | `/quit` | Quit prx |
 
@@ -84,6 +88,26 @@ When an action requires confirmation (approve, merge, etc.), a banner appears:
 When Claude requests permission for a mutating action:
 - `y` — Allow
 - `n` / `esc` — Deny
+
+## Post-Merge Review
+
+prx fetches recently merged PRs authored by others that you haven't reviewed. These appear in the PR list alongside open PRs, marked as merged.
+
+- `/approve` on a merged PR adds a thumbs-up reaction (post-merge acknowledgment)
+- `/flag` on a merged PR adds a thumbs-down reaction (flags it for discussion)
+- `ctrl+a` or `/toggle-merged` shows/hides merged PRs you've already reviewed
+
+Post-merge PRs also appear in the bulk approve screen when they score below the approve threshold.
+
+## Assessment Panel
+
+Each PR's assessment panel shows:
+- Risk scores for each configured criterion (1-5 scale)
+- Weighted verdict: APPROVE, REVIEW, or INVESTIGATE
+- Review notes — a plain-language summary of what to focus on
+- Key hunk preview — a snippet of the riskiest code change, with the file and line reference
+
+Inline images in PR descriptions are rendered as thumbnails in the terminal.
 
 ## Scoring
 

@@ -62,18 +62,18 @@ Config file: `~/.config/prx/config.toml`
 
 ```toml
 [review]
-max_diff_chars = 30000
-
-[weights]
-blast_radius = 1.0
-test_coverage = 1.0
-sensitivity = 1.0
-complexity = 1.0
-scope_focus = 1.0
+model = "sonnet"          # "sonnet", "opus", "haiku"
+merge_method = "merge"    # "merge", "squash", or "rebase"
 
 [thresholds]
 approve_below = 2.0
 review_above = 3.5
+
+[[criteria]]
+name = "blast_radius"
+label = "Blast"
+description = "How much of the system could break?"
+weight = 1.0
 ```
 
 ## Build & run

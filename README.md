@@ -2,7 +2,7 @@
 
 # prx
 
-### AI-powered PR triage for people who review code.
+### Smart code review for humans
 
 <br>
 
@@ -11,42 +11,22 @@
 
 </div>
 
-![Demo](docs/demo.gif)
+![Risky PR with review guide and key hunk](docs/pr-risky.png)
+![Chat with AI about a PR](docs/pr-chat.png)
+![Diff viewer with per-hunk annotations](docs/diff.png)
+![Bulk approve low-risk PRs](docs/bulk-approve.png)
+![Low-risk PR with dependency update](docs/pr-deps.png)
 
 ## What is prx?
 
-prx is a terminal UI that helps you prioritize code review. It uses AI to score each PR on how much *human judgment* it requires - not to review the code for you, but to tell you where your time matters most.
+prx is a code review terminal that helps you focus. AI scores each PR, collapses the noise, and surfaces what actually
+needs your attention. Review faster and smarter, even after merge.
 
-**For each PR, prx shows:**
-- Risk scores across configurable criteria (blast radius, intent clarity, irreversibility, domain knowledge, novelty)
-- A weighted verdict: APPROVE, REVIEW, or INVESTIGATE
-- Per-hunk annotations - trivial hunks auto-collapse so you see only what needs your brain
-- Inline comments, review history, and CI status
-
-**Chat-first interface:**
-- The primary interface is a conversation — PR assessment is scrollback, actions are chat
-- Ask questions about the code, the PR, or the risk assessment
-- Take PR actions by asking ("approve this", "request changes", "add a comment saying...")
-- Tune the scoring to your team: "treat test-only changes as low blast radius" or "I don't care about novelty for this repo" — Claude updates its criteria on the fly
-- Slash commands for quick actions: `/approve`, `/merge`, `/diff`, `/bulk`
-
-**Diff overlay (`ctrl+d`):**
-- Full-screen diff with per-hunk risk annotations
-- Navigate files (`]/[`), hunks (`}/{`), collapse/expand (`left/right`)
-- Add inline or global comments (`c`), quote code into chat (`?`)
-
-**Bulk approve (`/bulk`):**
-- Approve multiple low-risk PRs in one pass
-
-**Skills — self-aware help & extensibility:**
-- Ask "how do I configure scoring?" or "what shortcuts are available?" — Claude loads the built-in user guide skill and answers from it
-- Type `/user-guide` in chat to activate the built-in skill directly
-- Add your own skills in `~/.config/prx/skills/` — each skill is a directory with a `SKILL.md` (YAML frontmatter for name + description, markdown body for instructions)
-
-**Coming next: Personalized automated actions**
-- Auto-approve trivial PRs
-- Set up your own scoring criteria and automate from that
-- Customize auto-merge rules
+- **Risk scoring** - each PR is scored across configurable criteria (blast radius, intent clarity, irreversibility, domain knowledge, novelty) and given a verdict: APPROVE, REVIEW, or INVESTIGATE
+- **Chat-first interface** - the primary interface is a conversation. Ask questions, take PR actions, tune scoring criteria — all through chat
+- **Smart diff viewer** - full-screen diff with per-hunk risk annotations and key hunk preview. Trivial hunks auto-collapse so you see only what needs your brain
+- **Bulk approve** - clear a queue of low-risk PRs in one pass before focusing on the ones that need real attention
+- **Post-merge review** - catch merged PRs that landed without your approval, flag or approve with reactions
 
 ## Install
 
@@ -56,7 +36,7 @@ prx is a terminal UI that helps you prioritize code review. It uses AI to score 
 curl -fsSL https://raw.githubusercontent.com/sleuth-io/prx/main/install.sh | bash
 ```
 
-Or download the latest binary manually from [Releases](https://github.com/sleuth-io/prx/releases).
+Or download the latest binary from [Releases](https://github.com/sleuth-io/prx/releases).
 
 **From source:**
 
@@ -81,43 +61,7 @@ prx
 prx /path/to/repo
 ```
 
-### Keyboard shortcuts
-
-**Conversation (primary screen):**
-
-| Key           | Action |
-|---------------|--------|
-| `enter`       | Send chat message or run slash command |
-| `esc`         | Cancel streaming response / clear input |
-| `ctrl+d`      | Open diff overlay |
-| `ctrl+n`      | Next PR |
-| `ctrl+p`      | Previous PR |
-| `ctrl+r`      | Refresh PR data |
-| `ctrl+q`      | Quit |
-
-**Diff overlay (`ctrl+d`):**
-
-| Key                 | Action |
-|---------------------|--------|
-| `j/k/up/down`       | Scroll |
-| `]/[`               | Next/previous file |
-| `}/{`               | Next/previous hunk |
-| `left/right`        | Collapse/expand current item |
-| `shift+left` / `<`  | Collapse all items |
-| `shift+right` / `>` | Expand all items |
-| `?`                 | Quote code into chat |
-| `c`                 | Comment (global or inline) |
-| `q` / `esc`         | Return to conversation |
-
-**Slash commands** — type in the input bar:
-
-`/approve` `/merge` `/reject` `/comment` `/diff` `/bulk` `/next` `/prev` `/refresh` `/quit`
-
-### Bulk approve
-
-Type `/bulk` to open the bulk approve screen. prx lists all PRs below your configured `approve_below` risk threshold and lets you select which to approve. This lets you clear a queue of trivial PRs in one pass before focusing on the ones that need real attention.
-
-For the full reference — all shortcuts, scoring details, configuration format, and custom skills — see the [User Guide](internal/skills/builtins/user-guide/reference/guide.md). This guide is also available in-app: type `/user-guide` in the chat or ask "how do I configure scoring?"
+For the full reference — shortcuts, slash commands, scoring, configuration, post-merge review, custom skills, and more — see the [User Guide](internal/skills/builtins/user-guide/reference/guide.md). The guide is also available in-app: type `/user-guide` in chat or ask "how do I configure scoring?"
 
 ## License
 
