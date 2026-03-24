@@ -49,7 +49,8 @@ func (s *BulkApproveScene) Update(msg tea.Msg, m *Model) (Scene, tea.Cmd) {
 }
 
 func (s *BulkApproveScene) View(_ *Model) string {
-	return s.model.View()
+	// Clear any Kitty protocol images from the conversation scene.
+	return "\x1b_Ga=d,d=a\x1b\\" + s.model.View()
 }
 
 func (s *BulkApproveScene) Resize(width, height int) {

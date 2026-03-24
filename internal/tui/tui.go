@@ -404,9 +404,6 @@ func (m *Model) tryEnterBulkApprove() bool {
 			items = append(items, bulkapprove.ItemFromCard(card.PR, card.WeightedScore, card.Verdict, summary))
 		}
 	}
-	if len(items) == 0 {
-		return false
-	}
 	ba := bulkapprove.New(m.app.Repo, items, m.width, m.height)
 	m.bulkApproveShown = true
 	m.scene = newBulkApproveScene(ba, m.convScene, m.width, m.height)

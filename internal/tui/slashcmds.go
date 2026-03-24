@@ -147,10 +147,11 @@ func commands() []Command {
 		{
 			Name:        "bulk",
 			Description: "Open bulk approve view",
+			KeyBinding:  "ctrl+b",
 			Scope:       ScopeGlobal,
 			Run: func(s *ConversationScene, m *Model) (Scene, tea.Cmd, bool) {
 				m.tryEnterBulkApprove()
-				return s, nil, true
+				return m.scene, nil, true
 			},
 		},
 		{

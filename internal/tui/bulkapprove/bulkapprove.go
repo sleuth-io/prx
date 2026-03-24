@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/sleuth-io/prx/internal/github"
+	"github.com/sleuth-io/prx/internal/tui/fireworks"
 	"github.com/sleuth-io/prx/internal/tui/scoring"
 	"github.com/sleuth-io/prx/internal/tui/style"
 )
@@ -90,6 +91,7 @@ type Model struct {
 	width       int
 	height      int
 	spinnerView string
+	frame       int // animation frame counter for empty state
 }
 
 // New creates a new bulk approve model. Items with "approve" verdict are pre-checked.
@@ -116,6 +118,7 @@ func (m *Model) SetSize(width, height int) {
 // SetSpinnerView updates the spinner frame for the approving state.
 func (m *Model) SetSpinnerView(s string) {
 	m.spinnerView = s
+	m.frame++
 }
 
 // Active returns true when the model has items to show.
@@ -142,16 +145,14 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 
 func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	if m.approving {
-		if msg.String() == "q" || msg.String() == "ctrl+c" {
+		if msg.String() == "q" || msg.String() == "ctrl+c" || msg.String() == "ctrl+q" {
 			return m, func() tea.Msg { return QuitMsg{} }
 		}
 		return m, nil
 	}
 
 	switch msg.String() {
-	case "q":
-		return m, func() tea.Msg { return QuitMsg{} }
-	case "ctrl+c":
+	case "q", "ctrl+c", "ctrl+q":
 		return m, func() tea.Msg { return QuitMsg{} }
 	case "j", "down":
 		if m.cursor < len(m.items)-1 {
@@ -253,6 +254,15 @@ func (m Model) View() string {
 	lines = append(lines, header)
 	lines = append(lines, "")
 
+	if len(m.items) == 0 {
+		availH := m.height - len(lines) - 1 // -1 for footer
+		if availH < 5 {
+			availH = 5
+		}
+		fw := fireworks.Render(m.frame, width, availH)
+		lines = append(lines, fw)
+	}
+
 	for i, item := range m.items {
 		num := item.Number
 
@@ -317,12 +327,14 @@ func (m Model) View() string {
 		lines = append(lines, line1, line2, line3, "")
 	}
 
-	// Fill remaining height.
-	contentHeight := len(lines)
-	footerH := 1
-	remaining := m.height - contentHeight - footerH
-	for i := 0; i < remaining; i++ {
-		lines = append(lines, "")
+	// Fill remaining height (fireworks already fills its area).
+	if len(m.items) > 0 {
+		contentHeight := len(lines)
+		footerH := 1
+		remaining := m.height - contentHeight - footerH
+		for i := 0; i < remaining; i++ {
+			lines = append(lines, "")
+		}
 	}
 
 	// Footer.

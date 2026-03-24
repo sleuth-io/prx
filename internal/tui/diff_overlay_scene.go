@@ -43,6 +43,9 @@ func (s *DiffOverlayScene) Update(msg tea.Msg, m *Model) (Scene, tea.Cmd) {
 }
 
 func (s *DiffOverlayScene) View(m *Model) string {
+	// Clear any Kitty protocol images from the conversation scene.
+	clearImg := "\x1b_Ga=d,d=a\x1b\\"
+
 	if s.modal.active {
 		title := "  Add comment  (Enter submit · Alt+Enter newline · Esc cancel)"
 		if s.modal.isInline {
@@ -52,12 +55,12 @@ func (s *DiffOverlayScene) View(m *Model) string {
 			style.PanelTitleFocused.Render(title),
 			lipgloss.NewStyle().Padding(0, 1).Render(s.modal.textarea.View()),
 		)
-		return lipgloss.JoinVertical(lipgloss.Left,
+		return clearImg + lipgloss.JoinVertical(lipgloss.Left,
 			m.diffView.ViewWithModal(modalContent),
 			s.renderFooter(m),
 		)
 	}
-	return lipgloss.JoinVertical(lipgloss.Left,
+	return clearImg + lipgloss.JoinVertical(lipgloss.Left,
 		m.diffView.ViewContent(),
 		s.renderFooter(m),
 	)
@@ -75,6 +78,8 @@ func (s *DiffOverlayScene) Resize(width, height int) {
 
 func (s *DiffOverlayScene) handleKey(msg tea.KeyMsg, m *Model) (Scene, tea.Cmd) {
 	switch msg.String() {
+	case "ctrl+q":
+		return s, m.cleanupWorktrees()
 	case "q", "esc", "ctrl+d":
 		// Return to conversation scene
 		m.diffView.Focused = false

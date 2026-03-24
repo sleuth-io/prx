@@ -476,7 +476,7 @@ func (s *ConversationScene) renderFooter(m *Model) string {
 		status += fmt.Sprintf("  %s %d loading", m.spinner.View(), pending)
 	}
 
-	hints := "^d diff  ^n/^p nav  /approve  /merge  /comment  ^q quit"
+	hints := "^d diff  ^b bulk  ^n/^p nav  /approve  /merge  /comment  ^q quit"
 	gap := width - lipgloss.Width(status) - lipgloss.Width(hints) - 2
 	if gap < 1 {
 		gap = 1
