@@ -1,7 +1,6 @@
 package diff
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/viewport"
@@ -10,104 +9,6 @@ import (
 	"github.com/sleuth-io/prx/internal/github"
 	"github.com/sleuth-io/prx/internal/tui/style"
 )
-
-var (
-	diffAddedStyle            = lipgloss.NewStyle().Foreground(lipgloss.Color("71")).Background(lipgloss.Color("#1a3a1a"))
-	diffRemovedStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("167")).Background(lipgloss.Color("#3a1a1a"))
-	diffAddedHighlightStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("120")).Background(lipgloss.Color("22"))
-	diffRemovedHighlightStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("210")).Background(lipgloss.Color("52"))
-	diffHunkStyle             = lipgloss.NewStyle().Foreground(lipgloss.Color("111")).Faint(true)
-	diffFileStyle             = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("215"))
-
-	commentStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	commentAuthorStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("214"))
-	commentExpandedStyle = lipgloss.NewStyle().
-				BorderStyle(lipgloss.NormalBorder()).
-				BorderLeft(true).
-				BorderForeground(lipgloss.Color("214")).
-				PaddingLeft(1)
-
-	cursorLineStyle    = lipgloss.NewStyle().Background(lipgloss.Color("238"))                                             // subtle bg for diff content
-	cursorHunkStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("230")).Background(lipgloss.Color("26")) // bright on brighter blue
-	cursorTrivialStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Background(lipgloss.Color("240"))           // bright on lighter gray
-)
-
-// collapsibleKind identifies what kind of item is at a viewport line.
-type collapsibleKind int
-
-const (
-	kindFile         collapsibleKind = iota
-	kindHunk                         // individual hunk within a file
-	kindFilesGroup                   // header that wraps all diff files
-	kindCommentGroup                 // top-level comments grouped by author
-	kindComment                      // individual comment (inline, or expanded from group)
-)
-
-type collapsible struct {
-	lineIdx    int
-	kind       collapsibleKind
-	fileIdx    int
-	hunkIdx    int
-	comment    *CommentItem
-	group      *CommentGroup
-	rawContent string         // unstyled text for re-rendering with cursor style
-	baseStyle  lipgloss.Style // style used when not under cursor
-}
-
-// Hunk is a single diff hunk within a file.
-type Hunk struct {
-	HeaderLine    string
-	Rendered      []string
-	RawLines      []string // unstyled line content (parallel to Rendered)
-	LineNums      []int
-	Additions     int
-	Deletions     int
-	Collapsed     bool
-	Trivial       bool
-	Annotated     bool // true if AI provided an annotation for this hunk
-	TrivialReason string
-	StartLine     int // new-file line number from fragment header
-}
-
-// File is a parsed diff file with pre-rendered colored lines.
-type File struct {
-	Name      string
-	Collapsed bool
-	Hunks     []*Hunk
-}
-
-// CommentItem is a single comment (inline or top-level).
-type CommentItem struct {
-	Author       string
-	Path         string // empty for top-level
-	LineNum      int    // diff line number (0 if not line-specific)
-	Body         string
-	Collapsed    bool
-	Pending      bool   // true while the API call is in-flight
-	renderedBody string // cached markdown render
-}
-
-// CommentGroup groups top-level comments by author.
-type CommentGroup struct {
-	Author    string
-	Comments  []*CommentItem
-	Collapsed bool
-}
-
-// DiffView is a scrollable diff viewer with collapsible files and comments.
-type DiffView struct {
-	files          []*File
-	filesCollapsed bool            // controls the files group header
-	commentGroups  []*CommentGroup // top-level PR comments grouped by author
-	inline         []*CommentItem  // inline code comments (grouped into files during render)
-	collapsibles   []collapsible   // ordered list of all collapsible positions
-	lines          []string        // built lines (no cursor highlight applied)
-	cursorLine     int
-	viewport       viewport.Model
-	width          int
-	height         int
-	Focused        bool
-}
 
 func NewDiffView(width, height int) DiffView {
 	vp := viewport.New(width, height)
@@ -380,7 +281,7 @@ func (d *DiffView) PrevHunk() {
 	}
 }
 
-// ScrollToHunk scrolls to the hunk matching the given file and start line (±3 fuzzy).
+// ScrollToHunk scrolls to the hunk matching the given file and start line (plus/minus 3 fuzzy).
 // If the file or hunk is collapsed, it expands them first.
 func (d *DiffView) ScrollToHunk(file string, startLine int) {
 	// Find the file and hunk indices
@@ -398,7 +299,7 @@ func (d *DiffView) ScrollToHunk(file string, startLine int) {
 				break
 			}
 		}
-		// Fuzzy match ±3
+		// Fuzzy match plus/minus 3
 		if hunkIdx < 0 {
 			for delta := 1; delta <= 3; delta++ {
 				for hi, h := range f.Hunks {
@@ -502,152 +403,6 @@ func (d DiffView) Update(msg tea.Msg) (DiffView, tea.Cmd) {
 	return d, nil
 }
 
-// AddPendingComment adds a comment to the live diff view marked as pending.
-// Returns a pointer to the item so the caller can confirm or remove it later.
-func (d *DiffView) AddPendingComment(c github.ReviewComment) *CommentItem {
-	item := &CommentItem{
-		Author:    c.Author,
-		Path:      c.Path,
-		LineNum:   c.Line,
-		Body:      c.Body,
-		Collapsed: false,
-		Pending:   true,
-	}
-	if c.Path != "" {
-		d.inline = append(d.inline, item)
-	} else {
-		for _, g := range d.commentGroups {
-			if g.Author == c.Author {
-				g.Comments = append(g.Comments, item)
-				g.Collapsed = false
-				d.rebuildViewport()
-				return item
-			}
-		}
-		g := &CommentGroup{Author: c.Author, Collapsed: false, Comments: []*CommentItem{item}}
-		d.commentGroups = append(d.commentGroups, g)
-	}
-	d.rebuildViewport()
-	return item
-}
-
-// ConfirmComment clears the pending flag on a comment item.
-func (d *DiffView) ConfirmComment(item *CommentItem) {
-	item.Pending = false
-	d.rebuildViewport()
-}
-
-// RemoveComment removes a pending comment (on API error).
-func (d *DiffView) RemoveComment(item *CommentItem) {
-	for _, g := range d.commentGroups {
-		for i, c := range g.Comments {
-			if c == item {
-				g.Comments = append(g.Comments[:i], g.Comments[i+1:]...)
-				d.rebuildViewport()
-				return
-			}
-		}
-	}
-	for i, c := range d.inline {
-		if c == item {
-			d.inline = append(d.inline[:i], d.inline[i+1:]...)
-			d.rebuildViewport()
-			return
-		}
-	}
-}
-
-// CurrentLineTarget returns the file path and new-file line number at the cursor.
-func (d *DiffView) CurrentLineTarget() (path string, line int) {
-	var fileCol *collapsible
-	var hunkCol *collapsible
-	for i := range d.collapsibles {
-		c := &d.collapsibles[i]
-		if c.lineIdx > d.cursorLine {
-			break
-		}
-		if c.kind == kindFile {
-			fileCol = c
-			hunkCol = nil // reset hunk when we enter a new file
-		}
-		if c.kind == kindHunk {
-			hunkCol = c
-		}
-	}
-	if fileCol == nil || hunkCol == nil {
-		return "", 0
-	}
-	f := d.files[fileCol.fileIdx]
-	h := f.Hunks[hunkCol.hunkIdx]
-	offset := d.cursorLine - hunkCol.lineIdx - 1 // -1 for hunk header line
-	if offset < 0 || offset >= len(h.LineNums) {
-		return "", 0
-	}
-	ln := h.LineNums[offset]
-	if ln <= 0 {
-		return "", 0
-	}
-	return f.Name, ln
-}
-
-// DiffQuote captures a quoted line from the diff for embedding in chat.
-type DiffQuote struct {
-	File       string // file path
-	Line       int    // line number
-	RawContent string // unstyled line content (e.g. "+  def foo():")
-	StyledLine string // ANSI-styled rendered line from the diff
-}
-
-// CurrentQuote returns the diff line at the cursor for quoting in chat.
-// Returns nil if cursor isn't on a diff line.
-func (d *DiffView) CurrentQuote() *DiffQuote {
-	path, line := d.CurrentLineTarget()
-	if path == "" {
-		return nil
-	}
-	var fileCol *collapsible
-	var hunkCol *collapsible
-	for i := range d.collapsibles {
-		c := &d.collapsibles[i]
-		if c.lineIdx > d.cursorLine {
-			break
-		}
-		if c.kind == kindFile {
-			fileCol = c
-			hunkCol = nil
-		}
-		if c.kind == kindHunk {
-			hunkCol = c
-		}
-	}
-	q := &DiffQuote{File: path, Line: line}
-	if fileCol == nil || hunkCol == nil {
-		return q
-	}
-	f := d.files[fileCol.fileIdx]
-	h := f.Hunks[hunkCol.hunkIdx]
-	offset := d.cursorLine - hunkCol.lineIdx - 1
-	if offset < 0 || offset >= len(h.RawLines) {
-		return q
-	}
-	q.RawContent = h.RawLines[offset]
-	if offset < len(h.Rendered) {
-		q.StyledLine = h.Rendered[offset]
-	}
-	return q
-}
-
-func (d DiffView) TitleWithCommentCount() string {
-	n := len(d.inline)
-	for _, g := range d.commentGroups {
-		n += len(g.Comments)
-	}
-	if n > 0 {
-		return fmt.Sprintf("Diff \U0001f4ac%d", n)
-	}
-	return "Diff"
-}
-
 // ViewContent renders the diff body without a title bar (for tabbed layout).
 func (d DiffView) ViewContent() string {
 	return lipgloss.JoinHorizontal(lipgloss.Top, d.viewport.View(), style.RenderScrollbar(d.viewport))
@@ -726,53 +481,4 @@ func (d DiffView) ViewWithModal(modal string) string {
 		style.RenderScrollbar(d.viewport),
 	)
 	return lipgloss.JoinVertical(lipgloss.Left, title, content)
-}
-
-func renderCommentGroup(g *CommentGroup) string {
-	count := style.DimStyle.Render(fmt.Sprintf("(%d)", len(g.Comments)))
-	if g.Collapsed {
-		return "\U0001f4ac " + commentAuthorStyle.Render(g.Author) + " " + count + style.CollapseHint.Render("  [\u2192 expand]")
-	}
-	return "\U0001f4ac " + commentAuthorStyle.Render(g.Author) + " " + count + style.CollapseHint.Render("  [\u2190 collapse]")
-}
-
-func renderComment(c *CommentItem, width int, grouped bool) []string {
-	var header string
-	if grouped {
-		header = "  "
-	} else {
-		prefix := ""
-		if c.Path != "" {
-			prefix = style.DimStyle.Render(c.Path + ": ")
-		}
-		pendingMark := ""
-		if c.Pending {
-			pendingMark = style.DimStyle.Render(" \u2026posting")
-		}
-		header = "\U0001f4ac " + commentAuthorStyle.Render(c.Author) + pendingMark + "  " + prefix
-	}
-
-	if c.Collapsed {
-		first := firstLine(c.Body)
-		if len(first) > 80 {
-			first = first[:80] + "\u2026"
-		}
-		return []string{header + commentStyle.Render(first) + style.CollapseHint.Render("  [\u2192 expand]")}
-	}
-
-	if c.renderedBody == "" {
-		c.renderedBody = style.RenderMarkdown(c.Body, width-4)
-	}
-	body := commentExpandedStyle.Width(width - 4).Render(c.renderedBody)
-	var out []string
-	out = append(out, header+style.CollapseHint.Render("  [\u2190 collapse]"))
-	out = append(out, strings.Split(body, "\n")...)
-	return out
-}
-
-func firstLine(s string) string {
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		return s[:i]
-	}
-	return s
 }
