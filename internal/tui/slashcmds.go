@@ -72,7 +72,7 @@ func commands() []Command {
 				if card == nil || card.Scoring || m.isOwnPR(card) {
 					return s, nil, true
 				}
-				repo, num := m.app.Repo, card.PR.Number
+				repo, num := card.Ctx.Repo, card.PR.Number
 				if card.PostMerge {
 					s.confirm = &confirmDialog{
 						description:  fmt.Sprintf("Approve (post-merge) PR #%d?", num),
@@ -98,7 +98,7 @@ func commands() []Command {
 				if card == nil || !card.PostMerge {
 					return s, nil, true
 				}
-				repo, num := m.app.Repo, card.PR.Number
+				repo, num := card.Ctx.Repo, card.PR.Number
 				s.confirm = &confirmDialog{
 					description:  fmt.Sprintf("Flag PR #%d?", num),
 					actionStatus: "Flagging…",
@@ -142,7 +142,7 @@ func commands() []Command {
 					s.actionDone = true
 					return s, nil, true
 				}
-				repo, num := m.app.Repo, card.PR.Number
+				repo, num := card.Ctx.Repo, card.PR.Number
 				method := m.app.Config.Review.MergeMethod
 				desc := fmt.Sprintf("Merge PR #%d? (%s + delete branch)", num, method)
 				if warn := card.PR.MergeWarnReason(); warn != "" {
@@ -165,7 +165,7 @@ func commands() []Command {
 				if card == nil || card.Scoring || card.Assessment == nil || m.isOwnPR(card) {
 					return s, nil, true
 				}
-				repo, num, notes := m.app.Repo, card.PR.Number, card.Assessment.ReviewNotes
+				repo, num, notes := card.Ctx.Repo, card.PR.Number, card.Assessment.ReviewNotes
 				s.confirm = &confirmDialog{
 					description:  fmt.Sprintf("Request changes on PR #%d?", num),
 					actionStatus: "Requesting changes…",
@@ -213,7 +213,11 @@ func commands() []Command {
 				}
 				s.actionStatus = "Refreshing…"
 				s.actionDone = false
-				return s, tea.Batch(refreshPRCmd(card.PR, m.app), fetchPRListCmd(m.app.Repo), fetchMergedPRListCmd(m.app.Repo, m.app.CurrentUser)), true
+				cmds := []tea.Cmd{refreshPRCmd(card.PR, card.Ctx)}
+				for _, r := range m.app.Repos {
+					cmds = append(cmds, fetchPRListCmd(r), fetchMergedPRListCmd(r))
+				}
+				return s, tea.Batch(cmds...), true
 			},
 		},
 		{

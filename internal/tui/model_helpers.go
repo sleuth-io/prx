@@ -72,9 +72,9 @@ func (m *Model) tryStartupTransition() {
 	m.resizeLayout()
 }
 
-// checkNoPRs sets noPRs=true only when both lists have returned and there are no cards or fetches pending.
+// checkNoPRs sets noPRs=true only when all repo lists have returned and there are no cards or fetches pending.
 func (m *Model) checkNoPRs() {
-	if !m.openListDone || !m.mergedListDone {
+	if m.openListsDone < len(m.app.Repos) || m.mergedListsDone < len(m.app.Repos) {
 		return
 	}
 	if len(m.cards) == 0 && m.fetching == 0 {
@@ -110,6 +110,11 @@ func (m Model) visibleCardCount() int {
 
 func (m Model) isOwnPR(card *PRCard) bool {
 	return card.PR.Author == m.app.CurrentUser
+}
+
+// multiRepo returns true when reviewing PRs across multiple repositories.
+func (m Model) multiRepo() bool {
+	return len(m.app.Repos) > 1
 }
 
 func (m *Model) navigatePR(delta int, s *ConversationScene) {
@@ -148,6 +153,8 @@ func (m *Model) loadCurrentDiff() {
 
 func (m *Model) buildRenderData(card *PRCard) scoring.RenderData {
 	return scoring.RenderData{
+		Repo:             card.Ctx.Repo,
+		MultiRepo:        m.multiRepo(),
 		PR:               card.PR,
 		Assessment:       card.Assessment,
 		Score:            card.WeightedScore,
@@ -173,13 +180,13 @@ func (m *Model) startChatCmd(card *PRCard) tea.Cmd {
 	if wp != nil {
 		logger.Info("chat: using warm process for PR #%d", card.PR.Number)
 		card.Chat.Cancel = wp.Kill
-		return sendChatCmdWarm(wp, card.PR, card.Assessment, card.Chat.Messages,
+		return sendChatCmdWarm(wp, card.PR, card.Ctx.Repo, card.Assessment, card.Chat.Messages,
 			nil, m.isOwnPR(card), m.permSocketPath, m.program, m.skillCatalog())
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	card.Chat.Cancel = cancel
 	return sendChatCmd(ctx, card.Chat.WorktreePath, card.PR, card.Assessment, card.Chat.Messages,
-		nil, m.app.Config.Review.Model, m.app.Repo, m.isOwnPR(card),
+		nil, m.app.Config.Review.Model, card.Ctx.Repo, m.isOwnPR(card),
 		m.permSocketPath, m.program, m.skillCatalog())
 }
 
@@ -214,7 +221,7 @@ func (m *Model) buildClaudeArgs(card *PRCard) []string {
 					"args": []string{
 						"mcp-server",
 						"--socket=" + m.permSocketPath,
-						"--repo=" + m.app.Repo,
+						"--repo=" + card.Ctx.Repo,
 						"--pr=" + strconv.Itoa(card.PR.Number),
 						"--commit=" + card.PR.HeadSHA,
 					},
@@ -248,11 +255,12 @@ func (m *Model) tryPreWarm(card *PRCard) {
 	logger.Info("chat: pre-warming Claude for PR #%d", card.PR.Number)
 	card.Chat.Status = "Starting Claude..."
 
+	repo := card.Ctx.Repo
 	prNumber := card.PR.Number
 	args := m.buildClaudeArgs(card)
 	wp := ai.StartWarm(context.Background(), args, card.Chat.WorktreePath)
 	wp.OnStatus = func(status string) {
-		m.program.Send(chatStatusMsg{prNumber: prNumber, status: status})
+		m.program.Send(chatStatusMsg{repo: repo, prNumber: prNumber, status: status})
 	}
 	card.Chat.Warm = wp
 
@@ -264,7 +272,7 @@ func (m *Model) tryPreWarm(card *PRCard) {
 		} else {
 			logger.Info("chat: warm process ready for PR #%d", prNumber)
 		}
-		m.program.Send(chatStatusMsg{prNumber: prNumber, status: ""})
+		m.program.Send(chatStatusMsg{repo: repo, prNumber: prNumber, status: ""})
 	}()
 }
 
@@ -274,7 +282,7 @@ func (m *Model) hardReset() tea.Cmd {
 	for _, card := range m.cards {
 		card.Chat.Cleanup()
 		if card.Chat.WorktreePath != "" {
-			cmds = append(cmds, removeWorktreeCmd(m.app.RepoDir, card.Chat.WorktreePath))
+			cmds = append(cmds, removeWorktreeCmd(card.Ctx.RepoDir, card.Chat.WorktreePath))
 		}
 	}
 	m.convScene.actionStatus = ""
@@ -287,13 +295,19 @@ func (m *Model) hardReset() tea.Cmd {
 	m.scoring = 0
 	m.current = 0
 	m.startupDone = false
-	m.openListDone = false
-	m.mergedListDone = false
-	m.startupLog = []startupEntry{
+	m.openListsDone = 0
+	m.mergedListsDone = 0
+	log := []startupEntry{
 		{text: fmt.Sprintf("Signed in as %s", m.app.CurrentUser), done: true},
-		{text: fmt.Sprintf("Fetching PRs from %s", m.app.Repo)},
 	}
-	cmds = append(cmds, m.spinner.Tick, fetchPRListCmd(m.app.Repo), fetchMergedPRListCmd(m.app.Repo, m.app.CurrentUser))
+	for _, r := range m.app.Repos {
+		log = append(log, startupEntry{text: fmt.Sprintf("Fetching PRs from %s", r.Repo)})
+	}
+	m.startupLog = log
+	cmds = append(cmds, m.spinner.Tick)
+	for _, r := range m.app.Repos {
+		cmds = append(cmds, fetchPRListCmd(r), fetchMergedPRListCmd(r))
+	}
 	return tea.Batch(cmds...)
 }
 
@@ -306,7 +320,7 @@ func (m *Model) cleanupWorktrees() tea.Cmd {
 	for _, card := range m.cards {
 		card.Chat.Cleanup()
 		if card.Chat.WorktreePath != "" {
-			cmds = append(cmds, removeWorktreeCmd(m.app.RepoDir, card.Chat.WorktreePath))
+			cmds = append(cmds, removeWorktreeCmd(card.Ctx.RepoDir, card.Chat.WorktreePath))
 		}
 	}
 	cmds = append(cmds, tea.Quit)
@@ -334,16 +348,16 @@ func (m *Model) tryEnterBulkApprove() bool {
 			if card.Assessment != nil {
 				summary = card.Assessment.RiskSummary
 			}
-			items = append(items, bulkapprove.ItemFromCard(card.PR, card.WeightedScore, card.Verdict, summary, true))
+			items = append(items, bulkapprove.ItemFromCard(card.Ctx.Repo, card.PR, card.WeightedScore, card.Verdict, summary, true))
 		} else if !card.Scoring && card.ScoringErr == nil {
 			summary := ""
 			if card.Assessment != nil {
 				summary = card.Assessment.RiskSummary
 			}
-			items = append(items, bulkapprove.ItemFromCard(card.PR, card.WeightedScore, card.Verdict, summary, false))
+			items = append(items, bulkapprove.ItemFromCard(card.Ctx.Repo, card.PR, card.WeightedScore, card.Verdict, summary, false))
 		}
 	}
-	ba := bulkapprove.New(m.app.Repo, m.app.CurrentUser, items, m.width, m.height)
+	ba := bulkapprove.New(m.app.CurrentUser, items, m.width, m.height)
 	m.bulkApproveShown = true
 	m.scene = newBulkApproveScene(ba, m.convScene, m.width, m.height)
 	return true

@@ -29,6 +29,7 @@ var (
 
 // Item is a PR eligible for bulk approval.
 type Item struct {
+	Repo          string
 	Number        int
 	Title         string
 	Author        string
@@ -42,9 +43,16 @@ type Item struct {
 	PostMerge     bool
 }
 
+// itemKey is a composite key for multi-repo dedup.
+type itemKey struct {
+	repo   string
+	number int
+}
+
 // ItemFromCard builds an Item from a PRCard's exported fields.
-func ItemFromCard(pr *github.PR, score float64, verdict string, riskSummary string, postMerge bool) Item {
+func ItemFromCard(repo string, pr *github.PR, score float64, verdict string, riskSummary string, postMerge bool) Item {
 	return Item{
+		Repo:          repo,
 		Number:        pr.Number,
 		Title:         pr.Title,
 		Author:        pr.Author,
@@ -66,6 +74,7 @@ type ExitMsg struct{}
 
 // ViewPRMsg tells the parent to navigate to a specific PR.
 type ViewPRMsg struct {
+	Repo     string
 	PRNumber int
 }
 
@@ -85,11 +94,10 @@ type approveResult struct {
 // Model is the bulk approve screen.
 type Model struct {
 	items       []Item
-	selected    map[int]bool  // PR number -> selected
-	results     map[int]error // PR number -> nil (success) or error; nil map = not done
+	selected    map[itemKey]bool  // (repo, number) -> selected
+	results     map[itemKey]error // (repo, number) -> nil (success) or error; nil map = not done
 	cursor      int
 	approving   bool
-	repo        string
 	currentUser string
 	width       int
 	height      int
@@ -98,15 +106,14 @@ type Model struct {
 }
 
 // New creates a new bulk approve model. Items with "approve" verdict are pre-checked.
-func New(repo string, currentUser string, items []Item, width, height int) Model {
-	sel := make(map[int]bool, len(items))
+func New(currentUser string, items []Item, width, height int) Model {
+	sel := make(map[itemKey]bool, len(items))
 	for _, item := range items {
-		sel[item.Number] = item.Verdict == "approve"
+		sel[itemKey{item.Repo, item.Number}] = item.Verdict == "approve"
 	}
 	return Model{
 		items:       items,
 		selected:    sel,
-		repo:        repo,
 		currentUser: currentUser,
 		width:       width,
 		height:      height,
@@ -136,15 +143,29 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		return m.handleKey(msg)
 	case approveDoneMsg:
 		if m.results == nil {
-			m.results = make(map[int]error)
+			m.results = make(map[itemKey]error)
 		}
 		for _, r := range msg.results {
-			m.results[r.prNumber] = r.err
+			// Find the item to get its repo.
+			for _, item := range m.items {
+				if item.Number == r.prNumber {
+					m.results[itemKey{item.Repo, r.prNumber}] = r.err
+					break
+				}
+			}
 		}
 		m.approving = false
 		return m, nil
 	}
 	return m, nil
+}
+
+func (m Model) cursorKey() itemKey {
+	if m.cursor < len(m.items) {
+		item := m.items[m.cursor]
+		return itemKey{item.Repo, item.Number}
+	}
+	return itemKey{}
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
@@ -168,39 +189,41 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		}
 	case " ", "x":
 		if m.cursor < len(m.items) {
-			num := m.items[m.cursor].Number
-			if !m.isApproved(num) {
-				m.selected[num] = !m.selected[num]
+			key := m.cursorKey()
+			if !m.isApproved(key) {
+				m.selected[key] = !m.selected[key]
 			}
 		}
 	case "A":
 		allSelected := true
 		for _, item := range m.items {
-			if !m.selected[item.Number] {
+			if !m.selected[itemKey{item.Repo, item.Number}] {
 				allSelected = false
 				break
 			}
 		}
 		for _, item := range m.items {
-			if !m.isApproved(item.Number) {
-				m.selected[item.Number] = !allSelected
+			key := itemKey{item.Repo, item.Number}
+			if !m.isApproved(key) {
+				m.selected[key] = !allSelected
 			}
 		}
 	case "a":
 		var toApprove []Item
 		for _, item := range m.items {
-			if m.selected[item.Number] && !m.isApproved(item.Number) {
+			key := itemKey{item.Repo, item.Number}
+			if m.selected[key] && !m.isApproved(key) {
 				toApprove = append(toApprove, item)
 			}
 		}
 		if len(toApprove) > 0 {
 			m.approving = true
-			return m, approveCmd(m.repo, m.currentUser, toApprove)
+			return m, bulkApproveCmd(m.currentUser, toApprove)
 		}
 	case "enter":
 		if m.cursor < len(m.items) {
-			num := m.items[m.cursor].Number
-			return m, func() tea.Msg { return ViewPRMsg{PRNumber: num} }
+			item := m.items[m.cursor]
+			return m, func() tea.Msg { return ViewPRMsg{Repo: item.Repo, PRNumber: item.Number} }
 		}
 	case "n":
 		return m, func() tea.Msg { return ExitMsg{} }
@@ -210,23 +233,23 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) isApproved(prNumber int) bool {
+func (m Model) isApproved(key itemKey) bool {
 	if m.results == nil {
 		return false
 	}
-	_, done := m.results[prNumber]
+	_, done := m.results[key]
 	return done
 }
 
-func approveCmd(repo, currentUser string, items []Item) tea.Cmd {
+func bulkApproveCmd(currentUser string, items []Item) tea.Cmd {
 	return func() tea.Msg {
 		results := make([]approveResult, len(items))
 		for i, item := range items {
 			var err error
 			if item.PostMerge {
-				err = github.SetReaction(repo, item.Number, "+1", currentUser)
+				err = github.SetReaction(item.Repo, item.Number, "+1", currentUser)
 			} else {
-				err = github.ApprovePR(repo, item.Number)
+				err = github.ApprovePR(item.Repo, item.Number)
 			}
 			results[i] = approveResult{prNumber: item.Number, err: err}
 		}
@@ -243,7 +266,7 @@ func (m Model) View() string {
 	// Count selected.
 	selectedCount := 0
 	for _, item := range m.items {
-		if m.selected[item.Number] {
+		if m.selected[itemKey{item.Repo, item.Number}] {
 			selectedCount++
 		}
 	}
@@ -272,23 +295,30 @@ func (m Model) View() string {
 		lines = append(lines, fw)
 	}
 
+	// Count unique repos for display.
+	repos := make(map[string]bool)
+	for _, item := range m.items {
+		repos[item.Repo] = true
+	}
+	multiRepo := len(repos) > 1
+
 	for i, item := range m.items {
-		num := item.Number
+		key := itemKey{item.Repo, item.Number}
 
 		// Checkbox state.
 		var checkbox string
 		if m.results != nil {
-			if err, done := m.results[num]; done {
+			if err, done := m.results[key]; done {
 				if err != nil {
 					checkbox = errorStyle.Render("[!]")
 				} else {
 					checkbox = checkStyle.Render("[\u2713]")
 				}
 			} else {
-				checkbox = renderCheckbox(m.selected[num])
+				checkbox = renderCheckbox(m.selected[key])
 			}
 		} else {
-			checkbox = renderCheckbox(m.selected[num])
+			checkbox = renderCheckbox(m.selected[key])
 		}
 
 		// Line 1: checkbox, PR number, title, score, verdict.
@@ -304,17 +334,27 @@ func (m Model) View() string {
 				Render(" MERGED ") + " "
 		}
 
+		// In multi-repo mode, show short repo name.
+		repoPrefix := ""
+		if multiRepo {
+			parts := strings.Split(item.Repo, "/")
+			repoPrefix = parts[len(parts)-1] + " "
+		}
+
 		maxTitleW := width - 40
 		if item.PostMerge {
 			maxTitleW -= 10
+		}
+		if multiRepo {
+			maxTitleW -= len(repoPrefix)
 		}
 		title := item.Title
 		if len(title) > maxTitleW && maxTitleW > 3 {
 			title = title[:maxTitleW-3] + "..."
 		}
 
-		line1 := fmt.Sprintf("  %s  #%-4d  %s%-*s  %s %s %s",
-			checkbox, num, mergedTag, maxTitleW, title, bar, scoreStr, verdict)
+		line1 := fmt.Sprintf("  %s  %s#%-4d  %s%-*s  %s %s %s",
+			checkbox, repoPrefix, item.Number, mergedTag, maxTitleW, title, bar, scoreStr, verdict)
 
 		// Line 2: metadata.
 		date := item.CreatedAt
@@ -328,7 +368,7 @@ func (m Model) View() string {
 		// Line 3: risk summary or error.
 		var line3 string
 		if m.results != nil {
-			if err, done := m.results[num]; done && err != nil {
+			if err, done := m.results[key]; done && err != nil {
 				line3 = fmt.Sprintf("         %s", errorStyle.Render(fmt.Sprintf("Error: %v", err)))
 			} else {
 				line3 = renderSummaryLine(item.RiskSummary, width)

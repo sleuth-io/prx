@@ -31,7 +31,7 @@ func (s *BulkApproveScene) Update(msg tea.Msg, m *Model) (Scene, tea.Cmd) {
 		return s.conv, s.conv.FocusInput()
 	case bulkapprove.ViewPRMsg:
 		for i, c := range m.cards {
-			if c.PR.Number == msg.PRNumber {
+			if c.Ctx.Repo == msg.Repo && c.PR.Number == msg.PRNumber {
 				m.current = i
 				break
 			}
@@ -43,10 +43,11 @@ func (s *BulkApproveScene) Update(msg tea.Msg, m *Model) (Scene, tea.Cmd) {
 		return s, m.cleanupWorktrees()
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+r" {
-			return s, tea.Batch(
-				fetchPRListCmd(m.app.Repo),
-				fetchMergedPRListCmd(m.app.Repo, m.app.CurrentUser),
-			)
+			var cmds []tea.Cmd
+			for _, r := range m.app.Repos {
+				cmds = append(cmds, fetchPRListCmd(r), fetchMergedPRListCmd(r))
+			}
+			return s, tea.Batch(cmds...)
 		}
 		if msg.String() == "ctrl+a" {
 			m.showAllMerged = !m.showAllMerged
