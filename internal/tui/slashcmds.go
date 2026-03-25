@@ -119,13 +119,14 @@ func commands() []Command {
 				} else {
 					s.actionStatus = "Hiding reviewed merged PRs"
 				}
-				// If current card is now hidden, move to nearest visible.
+				// If current card is now hidden, move to nearest visible
+				// (may enter bulk approve if none remain).
 				if card := m.currentCard(); card != nil && !m.isCardVisible(card) {
 					m.skipToVisibleCard()
 					m.loadCurrentDiff()
 				}
 				s.BuildScrollback(m)
-				return s, nil, true
+				return m.scene, nil, true
 			},
 		},
 		{
