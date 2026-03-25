@@ -331,6 +331,9 @@ func (m *Model) handlePRDetails(msg prDetailsFetchedMsg) (Model, tea.Cmd) {
 		// Only parse diff + fetch status for now.
 		cmds := []tea.Cmd{parseDiffCmd(ctx.Repo, pr), fetchMergedPRStatusCmd(ctx.Repo, pr.Number, m.app.CurrentUser)}
 		cmds = append(cmds, m.fetchBodyImages(pr, ctx.Repo)...)
+		if m.fetching == 0 {
+			m.tryStartupTransition()
+		}
 		return *m, tea.Batch(cmds...)
 	}
 
@@ -340,6 +343,13 @@ func (m *Model) handlePRDetails(msg prDetailsFetchedMsg) (Model, tea.Cmd) {
 	cmds := []tea.Cmd{scorePRCmd(pr, ctx, m.program), parseDiffCmd(ctx.Repo, pr)}
 	cmds = append(cmds, createWorktreeCmd(ctx.RepoDir, pr.HeadSHA, ctx.Repo, pr.Number))
 	cmds = append(cmds, m.fetchBodyImages(pr, ctx.Repo)...)
+
+	// When all details are fetched, check if we can transition — earlier
+	// cached scores may have been blocked waiting for fetching to finish.
+	if m.fetching == 0 {
+		m.tryStartupTransition()
+	}
+
 	return *m, tea.Batch(cmds...)
 }
 
