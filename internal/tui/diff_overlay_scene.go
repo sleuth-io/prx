@@ -154,9 +154,9 @@ func (s *DiffOverlayScene) handleModalKey(msg tea.KeyMsg, m *Model) (Scene, tea.
 		})
 		s.modal = commentModal{}
 		if isInline {
-			return s, postInlineCommentCmd(m.app.Repo, card.PR.Number, commitSHA, filePath, fileLine, body, pendingItem)
+			return s, postInlineCommentCmd(card.Ctx.Repo, card.PR.Number, commitSHA, filePath, fileLine, body, pendingItem)
 		}
-		return s, postGlobalCommentCmd(m.app.Repo, card.PR.Number, body, pendingItem)
+		return s, postGlobalCommentCmd(card.Ctx.Repo, card.PR.Number, body, pendingItem)
 	default:
 		var cmd tea.Cmd
 		s.modal.textarea, cmd = s.modal.textarea.Update(msg)

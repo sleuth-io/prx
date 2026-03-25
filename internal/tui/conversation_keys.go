@@ -191,7 +191,7 @@ func (s *ConversationScene) sendChatMessage(m *Model) tea.Cmd {
 	var cmds []tea.Cmd
 	if card.Chat.NeedsWorktree() {
 		card.Chat.Status = "Creating worktree..."
-		cmds = append(cmds, createWorktreeCmd(m.app.RepoDir, card.PR.HeadSHA, card.PR.Number))
+		cmds = append(cmds, createWorktreeCmd(card.Ctx.RepoDir, card.PR.HeadSHA, card.Ctx.Repo, card.PR.Number))
 	} else {
 		cmd := m.startChatCmd(card)
 		cmds = append(cmds, cmd)
@@ -213,7 +213,7 @@ func (s *ConversationScene) handleActionDone(msg actionDoneMsg, m *Model) (Scene
 	switch msg.action {
 	case actionMerge:
 		s.actionStatus = fmt.Sprintf("Merged PR #%d", msg.pr)
-		if card := m.currentCard(); card != nil && card.PR.Number == msg.pr {
+		if card := m.findCard(msg.repo, msg.pr); card != nil {
 			card.PR.State = "MERGED"
 		}
 	case actionApprove:
@@ -222,10 +222,10 @@ func (s *ConversationScene) handleActionDone(msg actionDoneMsg, m *Model) (Scene
 		s.actionStatus = fmt.Sprintf("Requested changes on PR #%d", msg.pr)
 	case actionPostMergeApprove:
 		s.actionStatus = fmt.Sprintf("Approved post-merge PR #%d \U0001f44d", msg.pr)
-		m.markPostMergeReacted(msg.pr, "+1")
+		m.markPostMergeReacted(msg.repo, msg.pr, "+1")
 	case actionPostMergeFlag:
 		s.actionStatus = fmt.Sprintf("Flagged post-merge PR #%d \U0001f44e", msg.pr)
-		m.markPostMergeReacted(msg.pr, "-1")
+		m.markPostMergeReacted(msg.repo, msg.pr, "-1")
 	default:
 		s.actionStatus = fmt.Sprintf("%s done", msg.action)
 	}

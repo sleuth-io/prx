@@ -90,7 +90,13 @@ func (s *ConversationScene) View(m *Model) string {
 	// Top rule with PR info right-aligned (max 30% of width)
 	topRule := rule
 	if card := m.currentCard(); card != nil && card.PR != nil {
-		prLabel := fmt.Sprintf("#%d - %s", card.PR.Number, card.PR.Title)
+		var prLabel string
+		if m.multiRepo() {
+			parts := strings.Split(card.Ctx.Repo, "/")
+			prLabel = fmt.Sprintf("%s #%d - %s", parts[len(parts)-1], card.PR.Number, card.PR.Title)
+		} else {
+			prLabel = fmt.Sprintf("#%d - %s", card.PR.Number, card.PR.Title)
+		}
 		maxLen := width * 3 / 10
 		if len(prLabel) > maxLen {
 			prLabel = prLabel[:maxLen-1] + "…"
@@ -121,11 +127,13 @@ func (s *ConversationScene) View(m *Model) string {
 	parts = append(parts, s.renderFooter(m))
 	result := lipgloss.JoinVertical(lipgloss.Left, parts...)
 
+	// Always clear previous Kitty images so they don't persist when
+	// switching to a PR without an image.
+	result += "\x1b_Ga=d,d=a\x1b\\"
+
 	// Overlay image using cursor positioning (outside viewport content to
 	// avoid layout corruption from Kitty/sixel escape sequences).
 	if s.imageOverlay != "" {
-		// Clear all previous Kitty images so they don't persist at old positions.
-		result += "\x1b_Ga=d,d=a\x1b\\"
 		screenRow := s.imageContentRow - s.viewport.YOffset
 		if screenRow >= 0 && screenRow < s.viewport.Height {
 			// CSI save cursor, move to row, output image, restore cursor
@@ -219,8 +227,14 @@ func (s *ConversationScene) BuildScrollback(m *Model) {
 	}
 
 	content := strings.Join(sections, "\n")
+	atBottom := s.viewport.AtBottom()
 	s.viewport.SetContent(content)
-	s.viewport.GotoBottom()
+	// Only auto-scroll when the user is already at the bottom or chat is actively
+	// streaming. This lets users scroll up to read the assessment without being
+	// yanked back down by spinner-tick rebuilds (e.g. during "Preparing chat...").
+	if atBottom || (card.Chat != nil && card.Chat.Streaming) {
+		s.viewport.GotoBottom()
+	}
 }
 
 // ---------------------------------------------------------------------------

@@ -3,6 +3,7 @@ package tui
 import (
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/sleuth-io/prx/internal/ai"
+	"github.com/sleuth-io/prx/internal/app"
 	"github.com/sleuth-io/prx/internal/github"
 	"github.com/sleuth-io/prx/internal/tui/conversation"
 	"github.com/sleuth-io/prx/internal/tui/diff"
@@ -10,6 +11,7 @@ import (
 
 // PRCard is a PR — may be in-progress (Scoring=true) or fully assessed.
 type PRCard struct {
+	Ctx                 *app.RepoContext // per-repo context (repo name, dir, shared app)
 	PR                  *github.PR
 	Assessment          *ai.Assessment
 	WeightedScore       float64

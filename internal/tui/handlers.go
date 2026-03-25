@@ -15,6 +15,36 @@ import (
 )
 
 // ---------------------------------------------------------------------------
+// Card lookup helpers
+// ---------------------------------------------------------------------------
+
+// findCard finds a card by repo + PR number (composite key for multi-repo).
+func (m *Model) findCard(repo string, prNumber int) *PRCard {
+	for _, c := range m.cards {
+		if c.Ctx.Repo == repo && c.PR.Number == prNumber {
+			return c
+		}
+	}
+	return nil
+}
+
+// findCardIndex returns the index of a card by repo + PR number, or -1.
+func (m *Model) findCardIndex(repo string, prNumber int) int {
+	for i, c := range m.cards {
+		if c.Ctx.Repo == repo && c.PR.Number == prNumber {
+			return i
+		}
+	}
+	return -1
+}
+
+// cardKey returns a composite dedup key for a repo + PR number.
+type cardKey struct {
+	repo     string
+	prNumber int
+}
+
+// ---------------------------------------------------------------------------
 // Scene update dispatchers
 // ---------------------------------------------------------------------------
 
@@ -103,9 +133,10 @@ func (m *Model) handleSpinnerTick(msg spinner.TickMsg) (Model, tea.Cmd) {
 }
 
 func (m *Model) handlePermRefresh(msg perm.RefreshMsg) (Model, tea.Cmd) {
+	// perm.RefreshMsg only carries PR number — find any card with this number.
 	for _, card := range m.cards {
 		if card.PR.Number == msg.PRNumber {
-			return *m, refreshPRCmd(card.PR, m.app)
+			return *m, refreshPRCmd(card.PR, card.Ctx)
 		}
 	}
 	return *m, nil
@@ -121,7 +152,7 @@ func (m *Model) handleConfigReload(_ perm.ConfigReloadMsg) (Model, tea.Cmd) {
 		for _, card := range m.cards {
 			card.Scoring = true
 			m.scoring++
-			cmds = append(cmds, scorePRCmd(card.PR, m.app, m.program))
+			cmds = append(cmds, scorePRCmd(card.PR, card.Ctx, m.program))
 		}
 		m.buildScrollback()
 	}
@@ -133,23 +164,24 @@ func (m *Model) handleConfigReload(_ perm.ConfigReloadMsg) (Model, tea.Cmd) {
 // ---------------------------------------------------------------------------
 
 func (m *Model) handlePRList(msg prListFetchedMsg) (Model, tea.Cmd) {
-	m.openListDone = true
+	m.openListsDone++
 	if msg.err != nil {
 		m.err = msg.err
 		return *m, nil
 	}
-	existing := make(map[int]bool, len(m.cards))
+	existing := make(map[cardKey]bool, len(m.cards))
 	for _, card := range m.cards {
-		existing[card.PR.Number] = true
+		existing[cardKey{card.Ctx.Repo, card.PR.Number}] = true
 	}
 	var newRaws []map[string]any
 	for _, raw := range msg.rawPRs {
-		if num := int(raw["number"].(float64)); !existing[num] {
+		num := int(raw["number"].(float64))
+		if !existing[cardKey{msg.ctx.Repo, num}] {
 			newRaws = append(newRaws, raw)
 		}
 	}
-	if len(m.cards) == 0 && !m.mergedListDone {
-		// First open list result — set total but don't finalize yet (merged list pending).
+	if len(m.cards) == 0 && m.mergedListsDone < len(m.app.Repos) {
+		// First open list result — set total but don't finalize yet (merged lists pending).
 		m.total = len(msg.rawPRs)
 		m.fetching = len(newRaws)
 	} else {
@@ -159,16 +191,16 @@ func (m *Model) handlePRList(msg prListFetchedMsg) (Model, tea.Cmd) {
 		m.checkNoPRs()
 		return *m, nil
 	}
-	m.logStep(fmt.Sprintf("Found %d open PRs, loading details", len(msg.rawPRs)))
+	m.logStep(fmt.Sprintf("Found %d open PRs in %s", len(msg.rawPRs), msg.ctx.Repo))
 	cmds := make([]tea.Cmd, len(newRaws))
 	for i, raw := range newRaws {
-		cmds[i] = fetchPRDetailsCmd(raw, m.app)
+		cmds[i] = fetchPRDetailsCmd(raw, msg.ctx)
 	}
 	return *m, tea.Batch(cmds...)
 }
 
 func (m *Model) handleMergedPRList(msg mergedPRListFetchedMsg) (Model, tea.Cmd) {
-	m.mergedListDone = true
+	m.mergedListsDone++
 	if msg.err != nil {
 		logger.Error("fetching merged PRs: %v", msg.err)
 		m.checkNoPRs()
@@ -178,13 +210,14 @@ func (m *Model) handleMergedPRList(msg mergedPRListFetchedMsg) (Model, tea.Cmd) 
 		m.checkNoPRs()
 		return *m, nil
 	}
-	existing := make(map[int]bool, len(m.cards))
+	existing := make(map[cardKey]bool, len(m.cards))
 	for _, card := range m.cards {
-		existing[card.PR.Number] = true
+		existing[cardKey{card.Ctx.Repo, card.PR.Number}] = true
 	}
 	var newRaws []map[string]any
 	for _, raw := range msg.rawPRs {
-		if num := int(raw["number"].(float64)); !existing[num] {
+		num := int(raw["number"].(float64))
+		if !existing[cardKey{msg.ctx.Repo, num}] {
 			newRaws = append(newRaws, raw)
 		}
 	}
@@ -193,10 +226,10 @@ func (m *Model) handleMergedPRList(msg mergedPRListFetchedMsg) (Model, tea.Cmd) 
 	}
 	m.total += len(newRaws)
 	m.fetching += len(newRaws)
-	m.logStep(fmt.Sprintf("Found %d merged PRs, loading details", len(newRaws)))
+	m.logStep(fmt.Sprintf("Found %d merged PRs in %s", len(newRaws), msg.ctx.Repo))
 	cmds := make([]tea.Cmd, len(newRaws))
 	for i, raw := range newRaws {
-		cmds[i] = fetchPRDetailsCmd(raw, m.app)
+		cmds[i] = fetchPRDetailsCmd(raw, msg.ctx)
 	}
 	return *m, tea.Batch(cmds...)
 }
@@ -204,7 +237,7 @@ func (m *Model) handleMergedPRList(msg mergedPRListFetchedMsg) (Model, tea.Cmd) 
 func (m *Model) handleMergedPRStatus(msg mergedPRStatusMsg) (Model, tea.Cmd) {
 	var targetCard *PRCard
 	for _, card := range m.cards {
-		if card.PR.Number == msg.prNumber {
+		if card.Ctx.Repo == msg.repo && card.PR.Number == msg.prNumber {
 			card.MergedStatusChecked = true
 			card.UserHasReviewed = msg.hasReview
 			card.UserHasReacted = msg.hasReaction
@@ -222,8 +255,8 @@ func (m *Model) handleMergedPRStatus(msg mergedPRStatusMsg) (Model, tea.Cmd) {
 		targetCard.Scoring = true
 		m.scoring++
 		cmds := []tea.Cmd{
-			scorePRCmd(targetCard.PR, m.app, m.program),
-			createWorktreeCmd(m.app.RepoDir, targetCard.PR.HeadSHA, targetCard.PR.Number),
+			scorePRCmd(targetCard.PR, targetCard.Ctx, m.program),
+			createWorktreeCmd(targetCard.Ctx.RepoDir, targetCard.PR.HeadSHA, targetCard.Ctx.Repo, targetCard.PR.Number),
 		}
 		return *m, tea.Batch(cmds...)
 	}
@@ -234,13 +267,10 @@ func (m *Model) handleMergedPRStatus(msg mergedPRStatusMsg) (Model, tea.Cmd) {
 }
 
 // markPostMergeReacted marks a post-merge card as reacted and navigates away if hidden.
-func (m *Model) markPostMergeReacted(prNumber int, reaction string) {
-	for _, card := range m.cards {
-		if card.PR.Number == prNumber {
-			card.UserHasReacted = true
-			card.UserReaction = reaction
-			break
-		}
+func (m *Model) markPostMergeReacted(repo string, prNumber int, reaction string) {
+	if card := m.findCard(repo, prNumber); card != nil {
+		card.UserHasReacted = true
+		card.UserReaction = reaction
 	}
 	if card := m.currentCard(); card != nil && !m.isCardVisible(card) {
 		m.skipToVisibleCard()
@@ -276,10 +306,11 @@ func (m *Model) handlePRDetails(msg prDetailsFetchedMsg) (Model, tea.Cmd) {
 		return *m, nil
 	}
 	pr := msg.pr
+	ctx := msg.ctx
 	if !m.startupDone {
 		fetched := m.total - m.fetching
 		cached := ""
-		key := cache.Key(m.app.Repo, pr.Number, pr.Diff, reviewsText(pr, m.app.CurrentUser), m.app.Config.Criteria)
+		key := cache.Key(ctx.Repo, pr.Number, pr.Diff, reviewsText(pr, m.app.CurrentUser), m.app.Config.Criteria)
 		if _, ok := m.app.Cache.Get(key); ok {
 			cached = " (cached)"
 		} else {
@@ -288,79 +319,67 @@ func (m *Model) handlePRDetails(msg prDetailsFetchedMsg) (Model, tea.Cmd) {
 		m.logStep(fmt.Sprintf("Loaded PR #%d: %s%s (%d/%d)", pr.Number, truncate(pr.Title, 40), cached, fetched, m.total))
 	}
 	isPostMerge := pr.State == "MERGED"
-	card := &PRCard{PR: pr, PostMerge: isPostMerge, Chat: &conversation.ChatSession{
+	card := &PRCard{Ctx: ctx, PR: pr, PostMerge: isPostMerge, Chat: &conversation.ChatSession{
 		Status: "Preparing chat...",
 	}}
-	// Insert sorted by PR number descending (newest first).
-	idx := 0
-	for idx < len(m.cards) && m.cards[idx].PR.Number > pr.Number {
-		idx++
-	}
-	m.cards = append(m.cards, nil)
-	copy(m.cards[idx+1:], m.cards[idx:])
-	m.cards[idx] = card
-	if m.fetching == 0 && idx <= m.current && len(m.cards) > 1 {
-		m.current++
-	}
-	if len(m.cards) == 1 {
-		m.buildScrollback()
-	}
+	m.cards = append(m.cards, card)
 
 	m.refreshBulkApproveIfActive()
 
 	if isPostMerge {
 		// For merged PRs, defer scoring until we know if user already reviewed.
 		// Only parse diff + fetch status for now.
-		cmds := []tea.Cmd{parseDiffCmd(pr), fetchMergedPRStatusCmd(m.app.Repo, pr.Number, m.app.CurrentUser)}
-		cmds = append(cmds, m.fetchBodyImages(pr)...)
+		cmds := []tea.Cmd{parseDiffCmd(ctx.Repo, pr), fetchMergedPRStatusCmd(ctx.Repo, pr.Number, m.app.CurrentUser)}
+		cmds = append(cmds, m.fetchBodyImages(pr, ctx.Repo)...)
+		if m.fetching == 0 {
+			m.tryStartupTransition()
+		}
 		return *m, tea.Batch(cmds...)
 	}
 
 	// Open PRs: score + create worktree immediately.
 	card.Scoring = true
 	m.scoring++
-	cmds := []tea.Cmd{scorePRCmd(pr, m.app, m.program), parseDiffCmd(pr)}
-	cmds = append(cmds, createWorktreeCmd(m.app.RepoDir, pr.HeadSHA, pr.Number))
-	cmds = append(cmds, m.fetchBodyImages(pr)...)
+	cmds := []tea.Cmd{scorePRCmd(pr, ctx, m.program), parseDiffCmd(ctx.Repo, pr)}
+	cmds = append(cmds, createWorktreeCmd(ctx.RepoDir, pr.HeadSHA, ctx.Repo, pr.Number))
+	cmds = append(cmds, m.fetchBodyImages(pr, ctx.Repo)...)
+
+	// When all details are fetched, check if we can transition — earlier
+	// cached scores may have been blocked waiting for fetching to finish.
+	if m.fetching == 0 {
+		m.tryStartupTransition()
+	}
+
 	return *m, tea.Batch(cmds...)
 }
 
 func (m *Model) handleDiffParsed(msg prDiffParsedMsg) (Model, tea.Cmd) {
-	for _, card := range m.cards {
-		if card.PR.Number == msg.prNumber {
-			card.parsedFiles = msg.files
-			applyHunkAnnotations(card)
-			break
-		}
+	if card := m.findCard(msg.repo, msg.prNumber); card != nil {
+		card.parsedFiles = msg.files
+		applyHunkAnnotations(card)
 	}
-	if card := m.currentCard(); card != nil && card.PR.Number == msg.prNumber {
+	if card := m.currentCard(); card != nil && card.Ctx.Repo == msg.repo && card.PR.Number == msg.prNumber {
 		m.diffView.SetParsedContent(card.parsedFiles, card.PR)
 	}
 	return *m, nil
 }
 
 func (m *Model) handleScoringToolCall(msg scoringToolCallMsg) (Model, tea.Cmd) {
-	for _, card := range m.cards {
-		if card.PR.Number == msg.prNumber {
-			card.ScoringToolCount = msg.count
-			card.ScoringLastTool = msg.lastTool
-			break
-		}
+	if card := m.findCard(msg.repo, msg.prNumber); card != nil {
+		card.ScoringToolCount = msg.count
+		card.ScoringLastTool = msg.lastTool
 	}
-	if card := m.currentCard(); card != nil && card.PR.Number == msg.prNumber && card.Scoring {
+	if card := m.currentCard(); card != nil && card.Ctx.Repo == msg.repo && card.PR.Number == msg.prNumber && card.Scoring {
 		m.buildScrollback()
 	}
 	return *m, nil
 }
 
 func (m *Model) handleScoringStatus(msg scoringStatusMsg) (Model, tea.Cmd) {
-	for _, card := range m.cards {
-		if card.PR.Number == msg.prNumber {
-			card.ScoringStatus = msg.status
-			break
-		}
+	if card := m.findCard(msg.repo, msg.prNumber); card != nil {
+		card.ScoringStatus = msg.status
 	}
-	if card := m.currentCard(); card != nil && card.PR.Number == msg.prNumber && card.Scoring {
+	if card := m.currentCard(); card != nil && card.Ctx.Repo == msg.repo && card.PR.Number == msg.prNumber && card.Scoring {
 		m.buildScrollback()
 	}
 	return *m, nil
@@ -368,39 +387,34 @@ func (m *Model) handleScoringStatus(msg scoringStatusMsg) (Model, tea.Cmd) {
 
 func (m *Model) handlePRScored(msg prScoredMsg) (Model, tea.Cmd) {
 	m.scoring--
-	var scoredCard *PRCard
-	for _, card := range m.cards {
-		if card.PR.Number == msg.prNumber {
-			scoredCard = card
-			card.Scoring = false
-			card.ScoringToolCount = 0
-			card.ScoringLastTool = ""
-			card.ScoringStatus = ""
-			if msg.err != nil {
-				card.ScoringErr = msg.err
-			} else {
-				card.Assessment = msg.assessment
-				card.WeightedScore = scoring.WeightedScore(msg.assessment, m.app.Config.Criteria)
-				card.Verdict = scoring.ComputeVerdict(card.WeightedScore, m.app.Config.Thresholds)
-				applyHunkAnnotations(card)
-			}
-			src := "claude"
-			if msg.fromCache {
-				src = "cache"
-			}
-			logger.Info("PR #%d scored via %s: %.1f", msg.prNumber, src, card.WeightedScore)
-			if !m.startupDone {
-				label := fmt.Sprintf("Scored PR #%d: %s (%s, %.1f)", msg.prNumber, truncate(card.PR.Title, 40), src, card.WeightedScore)
-				m.logStep(label)
-			}
-			break
+	scoredCard := m.findCard(msg.repo, msg.prNumber)
+	if scoredCard != nil {
+		scoredCard.Scoring = false
+		scoredCard.ScoringToolCount = 0
+		scoredCard.ScoringLastTool = ""
+		scoredCard.ScoringStatus = ""
+		if msg.err != nil {
+			scoredCard.ScoringErr = msg.err
+		} else {
+			scoredCard.Assessment = msg.assessment
+			scoredCard.WeightedScore = scoring.WeightedScore(msg.assessment, m.app.Config.Criteria)
+			scoredCard.Verdict = scoring.ComputeVerdict(scoredCard.WeightedScore, m.app.Config.Thresholds)
+			applyHunkAnnotations(scoredCard)
+		}
+		src := "claude"
+		if msg.fromCache {
+			src = "cache"
+		}
+		logger.Info("PR #%d scored via %s: %.1f", msg.prNumber, src, scoredCard.WeightedScore)
+		if !m.startupDone {
+			label := fmt.Sprintf("Scored PR #%d: %s (%s, %.1f)", msg.prNumber, truncate(scoredCard.PR.Title, 40), src, scoredCard.WeightedScore)
+			m.logStep(label)
 		}
 	}
-	// Transition from startup screen once a visible PR is scored,
-	// or all fetching/scoring is complete (including merged status checks).
-	if !m.startupDone && scoredCard != nil && !scoredCard.Scoring {
-		scoredIsVisible := m.isCardVisible(scoredCard) && (!scoredCard.PostMerge || scoredCard.MergedStatusChecked)
-
+	// Transition from startup screen once the card list is stable (all details
+	// fetched) and at least one visible PR is scored. Waiting for fetching==0
+	// ensures no more card inserts will shift m.current and cause flashing.
+	if !m.startupDone && scoredCard != nil && m.fetching == 0 {
 		// Count truly visible cards: post-merge cards must have their status checked.
 		settled := true
 		visibleSettled := 0
@@ -413,12 +427,19 @@ func (m *Model) handlePRScored(msg prScoredMsg) (Model, tea.Cmd) {
 				visibleSettled++
 			}
 		}
-		allDone := m.fetching == 0 && m.scoring == 0 && settled
+		allDone := m.scoring == 0 && settled
+		hasVisibleScored := false
+		for _, c := range m.cards {
+			if m.isCardVisible(c) && c.Assessment != nil {
+				hasVisibleScored = true
+				break
+			}
+		}
 
-		logger.Info("startup check: PR #%d scored, visibleSettled=%d, scoredIsVisible=%v, allDone=%v, fetching=%d, scoring=%d, settled=%v",
-			msg.prNumber, visibleSettled, scoredIsVisible, allDone, m.fetching, m.scoring, settled)
+		logger.Info("startup check: PR #%d scored, visibleSettled=%d, hasVisibleScored=%v, allDone=%v, fetching=%d, scoring=%d, settled=%v",
+			msg.prNumber, visibleSettled, hasVisibleScored, allDone, m.fetching, m.scoring, settled)
 
-		if scoredIsVisible || allDone {
+		if hasVisibleScored || allDone {
 			m.logDone()
 			m.startupDone = true
 			m.resizeLayout()
@@ -432,7 +453,7 @@ func (m *Model) handlePRScored(msg prScoredMsg) (Model, tea.Cmd) {
 			}
 		}
 	}
-	if card := m.currentCard(); card != nil && card.PR.Number == msg.prNumber {
+	if card := m.currentCard(); card != nil && card.Ctx.Repo == msg.repo && card.PR.Number == msg.prNumber {
 		m.buildScrollback()
 		if card.parsedFiles != nil {
 			m.diffView.SetParsedContent(card.parsedFiles, card.PR)
@@ -454,11 +475,10 @@ func (m *Model) handlePRRefreshed(msg prRefreshedMsg) (Model, tea.Cmd) {
 	}
 	var rescoreCmd tea.Cmd
 	shaChanged := msg.newDiff != ""
-	isCurrent := m.currentCard() != nil && m.currentCard().PR.Number == msg.prNumber
-	for i, card := range m.cards {
-		if card.PR.Number != msg.prNumber {
-			continue
-		}
+	isCurrent := m.currentCard() != nil && m.currentCard().Ctx.Repo == msg.repo && m.currentCard().PR.Number == msg.prNumber
+	idx := m.findCardIndex(msg.repo, msg.prNumber)
+	if idx >= 0 {
+		card := m.cards[idx]
 		if msg.activity.State != "" {
 			card.PR.State = msg.activity.State
 		}
@@ -467,54 +487,53 @@ func (m *Model) handlePRRefreshed(msg prRefreshedMsg) (Model, tea.Cmd) {
 		}
 		isDone := (card.PR.State == "MERGED" && !card.PostMerge) || card.PR.State == "CLOSED"
 		if isDone && !isCurrent {
-			m.cards = append(m.cards[:i], m.cards[i+1:]...)
-			if m.current > i {
+			m.cards = append(m.cards[:idx], m.cards[idx+1:]...)
+			if m.current > idx {
 				m.current--
 			}
-			break
-		}
-		if msg.activity.Title != "" {
-			card.PR.Title = msg.activity.Title
-		}
-		if msg.activity.Body != "" {
-			card.PR.Body = msg.activity.Body
-		}
-		if msg.activity.HeadSHA != "" {
-			card.PR.HeadSHA = msg.activity.HeadSHA
-			card.PR.HeadRefName = msg.activity.HeadRefName
-		}
-		oldReviewsText := reviewsText(card.PR, m.app.CurrentUser)
-		card.PR.Checks = msg.activity.Checks
-		card.PR.Reviews = msg.activity.Reviews
-		card.PR.InlineComments = msg.activity.InlineComments
-		card.PR.Comments = msg.activity.Comments
-		reviewsChanged := reviewsText(card.PR, m.app.CurrentUser) != oldReviewsText
-		if !isDone {
-			if shaChanged {
-				card.PR.Diff = msg.newDiff
-				card.parsedFiles = nil
-				card.annotationsApplied = false
-				card.Scoring = true
-				m.scoring++
-				rescoreCmd = forceScorePRCmd(card.PR, m.app, m.program)
-			} else {
-				card.annotationsApplied = false
-				if card.parsedFiles != nil {
-					applyHunkAnnotations(card)
-				}
-				if reviewsChanged {
+		} else {
+			if msg.activity.Title != "" {
+				card.PR.Title = msg.activity.Title
+			}
+			if msg.activity.Body != "" {
+				card.PR.Body = msg.activity.Body
+			}
+			if msg.activity.HeadSHA != "" {
+				card.PR.HeadSHA = msg.activity.HeadSHA
+				card.PR.HeadRefName = msg.activity.HeadRefName
+			}
+			oldReviewsText := reviewsText(card.PR, m.app.CurrentUser)
+			card.PR.Checks = msg.activity.Checks
+			card.PR.Reviews = msg.activity.Reviews
+			card.PR.InlineComments = msg.activity.InlineComments
+			card.PR.Comments = msg.activity.Comments
+			reviewsChanged := reviewsText(card.PR, m.app.CurrentUser) != oldReviewsText
+			if !isDone {
+				if shaChanged {
+					card.PR.Diff = msg.newDiff
+					card.parsedFiles = nil
+					card.annotationsApplied = false
 					card.Scoring = true
 					m.scoring++
-					rescoreCmd = scorePRCmd(card.PR, m.app, m.program)
+					rescoreCmd = forceScorePRCmd(card.PR, card.Ctx, m.program)
+				} else {
+					card.annotationsApplied = false
+					if card.parsedFiles != nil {
+						applyHunkAnnotations(card)
+					}
+					if reviewsChanged {
+						card.Scoring = true
+						m.scoring++
+						rescoreCmd = scorePRCmd(card.PR, card.Ctx, m.program)
+					}
 				}
 			}
 		}
-		break
 	}
-	if card := m.currentCard(); card != nil && card.PR.Number == msg.prNumber {
+	if card := m.currentCard(); card != nil && card.Ctx.Repo == msg.repo && card.PR.Number == msg.prNumber {
 		m.buildScrollback()
 		if shaChanged {
-			return *m, tea.Batch(parseDiffCmd(card.PR), rescoreCmd)
+			return *m, tea.Batch(parseDiffCmd(card.Ctx.Repo, card.PR), rescoreCmd)
 		}
 		if card.parsedFiles != nil {
 			m.diffView.SetParsedContent(card.parsedFiles, card.PR)

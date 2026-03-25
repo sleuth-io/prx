@@ -11,26 +11,32 @@ import (
 	"github.com/sleuth-io/prx/internal/skills"
 )
 
-// App holds all shared application context.
+// RepoContext is the per-repo handle. It bundles the repo identity with a
+// back-pointer to shared application state (user, config, cache).
+type RepoContext struct {
+	Repo    string // GitHub owner/name, e.g. "sleuth-io/prx"
+	RepoDir string // local filesystem path
+	App     *App
+}
+
+// App holds shared application context that is the same across all repos.
 type App struct {
-	Repo        string
-	RepoDir     string
+	Repos       []*RepoContext
 	CurrentUser string
 	Config      config.Config
 	Cache       *cache.Cache
 	Skills      []skills.Skill
 }
 
-func New(repoDir string) (*App, error) {
-	// Run independent lookups in parallel
+func New(repoDirs []string) (*App, error) {
 	var (
 		wg   sync.WaitGroup
 		mu   sync.Mutex
 		errs []error
 
-		repo string
-		user string
-		cfg  config.Config
+		repos = make([]*RepoContext, len(repoDirs))
+		user  string
+		cfg   config.Config
 	)
 
 	run := func(fn func() error) {
@@ -45,11 +51,20 @@ func New(repoDir string) (*App, error) {
 		}()
 	}
 
-	run(func() error {
-		var err error
-		repo, err = github.DetectRepo(repoDir)
-		return err
-	})
+	// Detect each repo in parallel.
+	for i, dir := range repoDirs {
+		i, dir := i, dir
+		run(func() error {
+			repo, err := github.DetectRepo(dir)
+			if err != nil {
+				return err
+			}
+			mu.Lock()
+			repos[i] = &RepoContext{Repo: repo, RepoDir: dir}
+			mu.Unlock()
+			return nil
+		})
+	}
 
 	run(func() error {
 		var err error
@@ -72,17 +87,26 @@ func New(repoDir string) (*App, error) {
 		return nil, errs[0]
 	}
 
-	logger.Info("repo: %s  dir: %s  user: %s", repo, repoDir, user)
+	for _, r := range repos {
+		logger.Info("repo: %s  dir: %s", r.Repo, r.RepoDir)
+	}
+	logger.Info("user: %s", user)
 
 	discovered := skills.Discover()
 	logger.Info("skills: discovered %d skills", len(discovered))
 
-	return &App{
-		Repo:        repo,
-		RepoDir:     repoDir,
+	a := &App{
+		Repos:       repos,
 		CurrentUser: user,
 		Config:      cfg,
 		Cache:       cache.Load(),
 		Skills:      discovered,
-	}, nil
+	}
+
+	// Wire back-pointers.
+	for _, r := range repos {
+		r.App = a
+	}
+
+	return a, nil
 }

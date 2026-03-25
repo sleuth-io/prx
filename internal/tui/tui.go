@@ -60,9 +60,9 @@ type Model struct {
 	noPRs       bool // true when no open PRs found — any key exits
 
 	// Post-merge review
-	showAllMerged  bool // when true, show all merged PRs including already-reviewed/reacted
-	openListDone   bool // true once open PR list fetch has returned
-	mergedListDone bool // true once merged PR list fetch has returned
+	showAllMerged   bool // when true, show all merged PRs including already-reviewed/reacted
+	openListsDone   int  // count of repos whose open PR list fetch has returned
+	mergedListsDone int  // count of repos whose merged PR list fetch has returned
 }
 
 func New(a *app.App) Model {
@@ -77,6 +77,13 @@ func New(a *app.App) Model {
 		imgCache = imgrender.NewCache(60, 6) // 60 cols wide, 6 rows tall thumbnail
 	}
 
+	log := []startupEntry{
+		{text: fmt.Sprintf("Signed in as %s", a.CurrentUser), done: true},
+	}
+	for _, r := range a.Repos {
+		log = append(log, startupEntry{text: fmt.Sprintf("Fetching PRs from %s", r.Repo)})
+	}
+
 	return Model{
 		app:        a,
 		spinner:    s,
@@ -84,15 +91,16 @@ func New(a *app.App) Model {
 		convScene:  cs,
 		diffView:   diff.NewDiffView(80, 20),
 		imageCache: imgCache,
-		startupLog: []startupEntry{
-			{text: fmt.Sprintf("Signed in as %s", a.CurrentUser), done: true},
-			{text: fmt.Sprintf("Fetching PRs from %s", a.Repo)},
-		},
+		startupLog: log,
 	}
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.spinner.Tick, fetchPRListCmd(m.app.Repo), fetchMergedPRListCmd(m.app.Repo, m.app.CurrentUser), m.convScene.FocusInput())
+	cmds := []tea.Cmd{m.spinner.Tick, m.convScene.FocusInput()}
+	for _, r := range m.app.Repos {
+		cmds = append(cmds, fetchPRListCmd(r), fetchMergedPRListCmd(r))
+	}
+	return tea.Batch(cmds...)
 }
 
 // Update dispatches global messages first, then routes to the active scene.

@@ -34,6 +34,8 @@ var (
 
 // RenderData contains everything needed to render the assessment.
 type RenderData struct {
+	Repo             string // "owner/name" — shown in title when MultiRepo is true
+	MultiRepo        bool   // true when reviewing across multiple repos
 	PR               *github.PR
 	Assessment       *ai.Assessment
 	Score            float64
@@ -151,8 +153,13 @@ func buildContent(data *RenderData, vpWidth int) string {
 	case "CLOSED":
 		stateBadge = closedBanner.Render("CLOSED") + " "
 	}
+	prNum := fmt.Sprintf("#%d", pr.Number)
+	if data.MultiRepo {
+		parts := strings.Split(data.Repo, "/")
+		prNum = parts[len(parts)-1] + " " + prNum
+	}
 	title := lipgloss.NewStyle().Width(w - 2).Render(
-		fmt.Sprintf("  %s%s  %s", stateBadge, boldStyle.Render(fmt.Sprintf("#%d", pr.Number)), pr.Title))
+		fmt.Sprintf("  %s%s  %s", stateBadge, boldStyle.Render(prNum), pr.Title))
 
 	meta := fmt.Sprintf("  %s", style.DimStyle.Render(fmt.Sprintf("by %s  \u00b7  %s",
 		pr.Author, pr.CreatedAt[:10])))

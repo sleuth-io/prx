@@ -80,6 +80,9 @@ func (s *ChatSession) HandleWorktreeReady(path string, err error) {
 		s.HandleDone("", fmt.Errorf("failed to create worktree: %w", err))
 	} else {
 		s.WorktreePath = path
+		if s.Status == "Preparing chat..." {
+			s.Status = ""
+		}
 	}
 }
 

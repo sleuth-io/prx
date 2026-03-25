@@ -24,83 +24,83 @@ import (
 	"github.com/sleuth-io/prx/internal/tui/diff"
 )
 
-func parseDiffCmd(pr *github.PR) tea.Cmd {
+func parseDiffCmd(repo string, pr *github.PR) tea.Cmd {
 	return func() tea.Msg {
-		return prDiffParsedMsg{prNumber: pr.Number, files: diff.ParseDiff(pr.Diff)}
+		return prDiffParsedMsg{repo: repo, prNumber: pr.Number, files: diff.ParseDiff(pr.Diff)}
 	}
 }
 
-func fetchPRListCmd(repo string) tea.Cmd {
+func fetchPRListCmd(ctx *app.RepoContext) tea.Cmd {
 	return func() tea.Msg {
-		rawPRs, err := github.ListOpenPRsMeta(repo)
-		return prListFetchedMsg{rawPRs: rawPRs, err: err}
+		rawPRs, err := github.ListOpenPRsMeta(ctx.Repo)
+		return prListFetchedMsg{ctx: ctx, rawPRs: rawPRs, err: err}
 	}
 }
 
-func fetchPRDetailsCmd(raw map[string]any, a *app.App) tea.Cmd {
+func fetchPRDetailsCmd(raw map[string]any, ctx *app.RepoContext) tea.Cmd {
 	return func() tea.Msg {
-		pr, err := github.FetchPRDetails(a.Repo, raw)
-		return prDetailsFetchedMsg{pr: pr, raw: raw, err: err}
+		pr, err := github.FetchPRDetails(ctx.Repo, raw)
+		return prDetailsFetchedMsg{ctx: ctx, pr: pr, raw: raw, err: err}
 	}
 }
 
-func refreshPRCmd(pr *github.PR, a *app.App) tea.Cmd {
+func refreshPRCmd(pr *github.PR, ctx *app.RepoContext) tea.Cmd {
 	return func() tea.Msg {
-		activity, err := github.FetchPRActivity(a.Repo, pr.Number)
+		activity, err := github.FetchPRActivity(ctx.Repo, pr.Number)
 		if err != nil {
-			return prRefreshedMsg{prNumber: pr.Number, err: err}
+			return prRefreshedMsg{repo: ctx.Repo, prNumber: pr.Number, err: err}
 		}
 		var newDiff string
 		if activity.HeadSHA != "" && activity.HeadSHA != pr.HeadSHA {
 			logger.Info("PR #%d: SHA changed (%s → %s), re-fetching diff", pr.Number, pr.HeadSHA[:8], activity.HeadSHA[:8])
-			newDiff, _ = github.FetchDiff(a.Repo, pr.Number)
+			newDiff, _ = github.FetchDiff(ctx.Repo, pr.Number)
 		}
-		return prRefreshedMsg{prNumber: pr.Number, activity: activity, newDiff: newDiff}
+		return prRefreshedMsg{repo: ctx.Repo, prNumber: pr.Number, activity: activity, newDiff: newDiff}
 	}
 }
 
 // forceScorePRCmd scores a PR unconditionally, bypassing the cache.
-func forceScorePRCmd(pr *github.PR, a *app.App, program *tea.Program) tea.Cmd {
+func forceScorePRCmd(pr *github.PR, ctx *app.RepoContext, program *tea.Program) tea.Cmd {
 	return func() tea.Msg {
-		callbacks := scoringCallbacks(pr.Number, program)
-		assessment, err := ai.AssessPR(context.Background(), pr, a.RepoDir, a.Config.Criteria, a.Config.Review.Model, callbacks)
+		callbacks := scoringCallbacks(ctx.Repo, pr.Number, program)
+		assessment, err := ai.AssessPR(context.Background(), pr, ctx.RepoDir, ctx.App.Config.Criteria, ctx.App.Config.Review.Model, callbacks)
 		if err != nil {
-			return prScoredMsg{prNumber: pr.Number, err: err}
+			return prScoredMsg{repo: ctx.Repo, prNumber: pr.Number, err: err}
 		}
-		key := cache.Key(a.Repo, pr.Number, pr.Diff, reviewsText(pr, a.CurrentUser), a.Config.Criteria)
-		a.Cache.Set(key, *assessment)
-		return prScoredMsg{prNumber: pr.Number, assessment: assessment}
+		key := cache.Key(ctx.Repo, pr.Number, pr.Diff, reviewsText(pr, ctx.App.CurrentUser), ctx.App.Config.Criteria)
+		ctx.App.Cache.Set(key, *assessment)
+		return prScoredMsg{repo: ctx.Repo, prNumber: pr.Number, assessment: assessment}
 	}
 }
 
-func scorePRCmd(pr *github.PR, a *app.App, program *tea.Program) tea.Cmd {
+func scorePRCmd(pr *github.PR, ctx *app.RepoContext, program *tea.Program) tea.Cmd {
 	return func() tea.Msg {
-		key := cache.Key(a.Repo, pr.Number, pr.Diff, reviewsText(pr, a.CurrentUser), a.Config.Criteria)
+		key := cache.Key(ctx.Repo, pr.Number, pr.Diff, reviewsText(pr, ctx.App.CurrentUser), ctx.App.Config.Criteria)
 
-		if assessment, ok := a.Cache.Get(key); ok {
+		if assessment, ok := ctx.App.Cache.Get(key); ok {
 			logger.Info("PR #%d: cache hit", pr.Number)
 			assessment.DiffTruncated = len(pr.Diff) > 30000
-			return prScoredMsg{prNumber: pr.Number, assessment: &assessment, fromCache: true}
+			return prScoredMsg{repo: ctx.Repo, prNumber: pr.Number, assessment: &assessment, fromCache: true}
 		}
 
-		callbacks := scoringCallbacks(pr.Number, program)
-		assessment, err := ai.AssessPR(context.Background(), pr, a.RepoDir, a.Config.Criteria, a.Config.Review.Model, callbacks)
+		callbacks := scoringCallbacks(ctx.Repo, pr.Number, program)
+		assessment, err := ai.AssessPR(context.Background(), pr, ctx.RepoDir, ctx.App.Config.Criteria, ctx.App.Config.Review.Model, callbacks)
 		if err != nil {
-			return prScoredMsg{prNumber: pr.Number, err: err}
+			return prScoredMsg{repo: ctx.Repo, prNumber: pr.Number, err: err}
 		}
-		a.Cache.Set(key, *assessment)
-		return prScoredMsg{prNumber: pr.Number, assessment: assessment}
+		ctx.App.Cache.Set(key, *assessment)
+		return prScoredMsg{repo: ctx.Repo, prNumber: pr.Number, assessment: assessment}
 	}
 }
 
 // scoringCallbacks wires up StreamCallbacks that send scoring progress messages to the TUI.
-func scoringCallbacks(prNumber int, program *tea.Program) ai.StreamCallbacks {
+func scoringCallbacks(repo string, prNumber int, program *tea.Program) ai.StreamCallbacks {
 	return ai.StreamCallbacks{
 		OnStatus: func(status string) {
-			program.Send(scoringStatusMsg{prNumber: prNumber, status: status})
+			program.Send(scoringStatusMsg{repo: repo, prNumber: prNumber, status: status})
 		},
 		OnToolCall: func(count int, summary string) {
-			program.Send(scoringToolCallMsg{prNumber: prNumber, count: count, lastTool: summary})
+			program.Send(scoringToolCallMsg{repo: repo, prNumber: prNumber, count: count, lastTool: summary})
 		},
 	}
 }
@@ -108,36 +108,36 @@ func scoringCallbacks(prNumber int, program *tea.Program) ai.StreamCallbacks {
 func mergeCmd(repo string, number int, method string) tea.Cmd {
 	return func() tea.Msg {
 		err := github.MergePR(repo, number, method)
-		return actionDoneMsg{pr: number, action: actionMerge, err: err}
+		return actionDoneMsg{repo: repo, pr: number, action: actionMerge, err: err}
 	}
 }
 
 func approveCmd(repo string, number int) tea.Cmd {
 	return func() tea.Msg {
 		err := github.ApprovePR(repo, number)
-		return actionDoneMsg{pr: number, action: actionApprove, err: err}
+		return actionDoneMsg{repo: repo, pr: number, action: actionApprove, err: err}
 	}
 }
 
 func postGlobalCommentCmd(repo string, prNumber int, body string, item *diff.CommentItem) tea.Cmd {
 	return func() tea.Msg {
 		err := github.PostComment(repo, prNumber, body)
-		return commentSubmittedMsg{prNumber: prNumber, body: body, pendingItem: item, err: err}
+		return commentSubmittedMsg{repo: repo, prNumber: prNumber, body: body, pendingItem: item, err: err}
 	}
 }
 
 func postInlineCommentCmd(repo string, prNumber int, sha, path string, line int, body string, item *diff.CommentItem) tea.Cmd {
 	return func() tea.Msg {
 		err := github.PostInlineComment(repo, prNumber, sha, path, line, body)
-		return commentSubmittedMsg{prNumber: prNumber, isInline: true,
+		return commentSubmittedMsg{repo: repo, prNumber: prNumber, isInline: true,
 			filePath: path, fileLine: line, body: body, pendingItem: item, err: err}
 	}
 }
 
-func fetchImageCmd(prNumber int, url string, cache *imgrender.Cache) tea.Cmd {
+func fetchImageCmd(repo string, prNumber int, url string, cache *imgrender.Cache) tea.Cmd {
 	return func() tea.Msg {
 		_, err := cache.FetchAndRender(url)
-		return imageFetchedMsg{prNumber: prNumber, url: url, err: err}
+		return imageFetchedMsg{repo: repo, prNumber: prNumber, url: url, err: err}
 	}
 }
 
@@ -155,32 +155,32 @@ func openURLCmd(url string) tea.Cmd {
 	}
 }
 
-func fetchMergedPRListCmd(repo, currentUser string) tea.Cmd {
+func fetchMergedPRListCmd(ctx *app.RepoContext) tea.Cmd {
 	return func() tea.Msg {
 		since := time.Now().AddDate(0, 0, -7)
-		rawPRs, err := github.ListMergedPRsMeta(repo, currentUser, since)
-		return mergedPRListFetchedMsg{rawPRs: rawPRs, err: err}
+		rawPRs, err := github.ListMergedPRsMeta(ctx.Repo, ctx.App.CurrentUser, since)
+		return mergedPRListFetchedMsg{ctx: ctx, rawPRs: rawPRs, err: err}
 	}
 }
 
 func fetchMergedPRStatusCmd(repo string, number int, currentUser string) tea.Cmd {
 	return func() tea.Msg {
 		hasReview, hasReaction, err := github.FetchPRReviewAndReactionStatus(repo, number, currentUser)
-		return mergedPRStatusMsg{prNumber: number, hasReview: hasReview, hasReaction: hasReaction, err: err}
+		return mergedPRStatusMsg{repo: repo, prNumber: number, hasReview: hasReview, hasReaction: hasReaction, err: err}
 	}
 }
 
 func addReactionCmd(repo string, number int, content, action, currentUser string) tea.Cmd {
 	return func() tea.Msg {
 		err := github.SetReaction(repo, number, content, currentUser)
-		return actionDoneMsg{pr: number, action: action, err: err}
+		return actionDoneMsg{repo: repo, pr: number, action: action, err: err}
 	}
 }
 
 func requestChangesCmd(repo string, number int, body string) tea.Cmd {
 	return func() tea.Msg {
 		err := github.RequestChanges(repo, number, body)
-		return actionDoneMsg{pr: number, action: actionRequestChanges, err: err}
+		return actionDoneMsg{repo: repo, pr: number, action: actionRequestChanges, err: err}
 	}
 }
 
@@ -227,7 +227,7 @@ func reviewsText(pr *github.PR, excludeUser ...string) string {
 	return sb.String()
 }
 
-func createWorktreeCmd(repoDir string, sha string, prNumber int) tea.Cmd {
+func createWorktreeCmd(repoDir string, sha string, repo string, prNumber int) tea.Cmd {
 	return func() tea.Msg {
 		shortSHA := sha[:min(8, len(sha))]
 		logger.Info("worktree: fetching %s for PR #%d", shortSHA, prNumber)
@@ -235,7 +235,7 @@ func createWorktreeCmd(repoDir string, sha string, prNumber int) tea.Cmd {
 		fetchCmd.Dir = repoDir
 		if out, err := fetchCmd.CombinedOutput(); err != nil {
 			logger.Error("fetch for PR #%d sha %s: %v\n%s", prNumber, shortSHA, err, string(out))
-			return chatWorktreeReadyMsg{prNumber: prNumber, err: fmt.Errorf("git fetch: %w\n%s", err, string(out))}
+			return chatWorktreeReadyMsg{repo: repo, prNumber: prNumber, err: fmt.Errorf("git fetch: %w\n%s", err, string(out))}
 		}
 
 		path := fmt.Sprintf("/tmp/prx-%d-%d", prNumber, rand.Intn(100000))
@@ -244,10 +244,10 @@ func createWorktreeCmd(repoDir string, sha string, prNumber int) tea.Cmd {
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			logger.Error("worktree create for PR #%d: %v\n%s", prNumber, err, string(out))
-			return chatWorktreeReadyMsg{prNumber: prNumber, err: fmt.Errorf("git worktree add: %w\n%s", err, string(out))}
+			return chatWorktreeReadyMsg{repo: repo, prNumber: prNumber, err: fmt.Errorf("git worktree add: %w\n%s", err, string(out))}
 		}
 		logger.Info("worktree created for PR #%d at %s", prNumber, path)
-		return chatWorktreeReadyMsg{prNumber: prNumber, path: path}
+		return chatWorktreeReadyMsg{repo: repo, prNumber: prNumber, path: path}
 	}
 }
 
@@ -265,7 +265,7 @@ func removeWorktreeCmd(repoDir, path string) tea.Cmd {
 }
 
 // sendChatCmdWarm sends a chat message using a pre-warmed Claude process.
-func sendChatCmdWarm(wp *ai.WarmProcess, pr *github.PR, assessment *ai.Assessment, messages []chat.Message, diffCtx *ai.DiffContext, isOwnPR bool, socketPath string, program *tea.Program, skillCatalog []ai.SkillCatalog) tea.Cmd {
+func sendChatCmdWarm(wp *ai.WarmProcess, pr *github.PR, repo string, assessment *ai.Assessment, messages []chat.Message, diffCtx *ai.DiffContext, isOwnPR bool, socketPath string, program *tea.Program, skillCatalog []ai.SkillCatalog) tea.Cmd {
 	return func() tea.Msg {
 		history := make([]ai.ChatMessage, len(messages))
 		for i, m := range messages {
@@ -281,21 +281,21 @@ func sendChatCmdWarm(wp *ai.WarmProcess, pr *github.PR, assessment *ai.Assessmen
 
 		callbacks := ai.StreamCallbacks{
 			OnStatus: func(status string) {
-				program.Send(chatStatusMsg{prNumber: pr.Number, status: status})
+				program.Send(chatStatusMsg{repo: repo, prNumber: pr.Number, status: status})
 			},
 			OnToolCall: func(count int, summary string) {
-				program.Send(chatToolCallMsg{prNumber: pr.Number, count: count, lastTool: summary})
+				program.Send(chatToolCallMsg{repo: repo, prNumber: pr.Number, count: count, lastTool: summary})
 			},
 			OnToken: func(delta string) {
-				program.Send(chatTokenMsg{prNumber: pr.Number, token: delta})
+				program.Send(chatTokenMsg{repo: repo, prNumber: pr.Number, token: delta})
 			},
 		}
 
 		result, err := wp.Send(prompt, callbacks)
 		if err != nil {
-			return chatDoneMsg{prNumber: pr.Number, err: err}
+			return chatDoneMsg{repo: repo, prNumber: pr.Number, err: err}
 		}
-		return chatDoneMsg{prNumber: pr.Number, fullResponse: result}
+		return chatDoneMsg{repo: repo, prNumber: pr.Number, fullResponse: result}
 	}
 }
 
@@ -363,20 +363,20 @@ func sendChatCmd(ctx context.Context, worktreePath string, pr *github.PR, assess
 
 		callbacks := ai.StreamCallbacks{
 			OnStatus: func(status string) {
-				program.Send(chatStatusMsg{prNumber: pr.Number, status: status})
+				program.Send(chatStatusMsg{repo: repo, prNumber: pr.Number, status: status})
 			},
 			OnToolCall: func(count int, summary string) {
-				program.Send(chatToolCallMsg{prNumber: pr.Number, count: count, lastTool: summary})
+				program.Send(chatToolCallMsg{repo: repo, prNumber: pr.Number, count: count, lastTool: summary})
 			},
 			OnToken: func(delta string) {
-				program.Send(chatTokenMsg{prNumber: pr.Number, token: delta})
+				program.Send(chatTokenMsg{repo: repo, prNumber: pr.Number, token: delta})
 			},
 		}
 
 		result, err := ai.RunClaude(ctx, args, worktreePath, callbacks)
 		if err != nil {
-			return chatDoneMsg{prNumber: pr.Number, err: err}
+			return chatDoneMsg{repo: repo, prNumber: pr.Number, err: err}
 		}
-		return chatDoneMsg{prNumber: pr.Number, fullResponse: result}
+		return chatDoneMsg{repo: repo, prNumber: pr.Number, fullResponse: result}
 	}
 }

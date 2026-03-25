@@ -39,10 +39,10 @@ func main() {
 	}
 
 	rootCmd := &cobra.Command{
-		Use:           "prx [path]",
+		Use:           "prx [path...]",
 		Short:         "AI-powered pull request review TUI",
 		Long:          "prx reviews your GitHub pull requests with AI-powered risk assessment, right in the terminal.",
-		Args:          cobra.MaximumNArgs(1),
+		Args:          cobra.ArbitraryArgs,
 		Version:       fmt.Sprintf("%s (%s, %s)", buildinfo.Version, buildinfo.Commit, buildinfo.Date),
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -55,12 +55,12 @@ func main() {
 				return err
 			}
 
-			repoDir := "."
-			if len(args) > 0 {
-				repoDir = args[0]
+			repoDirs := args
+			if len(repoDirs) == 0 {
+				repoDirs = []string{"."}
 			}
 
-			a, err := app.New(repoDir)
+			a, err := app.New(repoDirs)
 			if err != nil {
 				return err
 			}
