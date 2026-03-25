@@ -127,11 +127,13 @@ func (s *ConversationScene) View(m *Model) string {
 	parts = append(parts, s.renderFooter(m))
 	result := lipgloss.JoinVertical(lipgloss.Left, parts...)
 
+	// Always clear previous Kitty images so they don't persist when
+	// switching to a PR without an image.
+	result += "\x1b_Ga=d,d=a\x1b\\"
+
 	// Overlay image using cursor positioning (outside viewport content to
 	// avoid layout corruption from Kitty/sixel escape sequences).
 	if s.imageOverlay != "" {
-		// Clear all previous Kitty images so they don't persist at old positions.
-		result += "\x1b_Ga=d,d=a\x1b\\"
 		screenRow := s.imageContentRow - s.viewport.YOffset
 		if screenRow >= 0 && screenRow < s.viewport.Height {
 			// CSI save cursor, move to row, output image, restore cursor
