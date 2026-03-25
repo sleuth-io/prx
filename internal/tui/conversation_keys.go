@@ -230,5 +230,8 @@ func (s *ConversationScene) handleActionDone(msg actionDoneMsg, m *Model) (Scene
 		s.actionStatus = fmt.Sprintf("%s done", msg.action)
 	}
 	s.BuildScrollback(m)
-	return s, nil
+	// markPostMergeReacted may have transitioned to bulk approve via
+	// skipToVisibleCard → tryEnterBulkApprove. Return m.scene so the
+	// caller picks up whichever scene is now active.
+	return m.scene, nil
 }
