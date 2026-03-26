@@ -51,13 +51,6 @@ func (s *BulkApproveScene) Update(msg tea.Msg, m *Model) (Scene, tea.Cmd) {
 		}
 		if msg.String() == "ctrl+a" {
 			m.showAllMerged = !m.showAllMerged
-			if m.visibleCardCount() > 0 {
-				m.skipToVisibleCard()
-				m.loadCurrentDiff()
-				s.conv.BuildScrollback(m)
-				return s.conv, s.conv.FocusInput()
-			}
-			// Still no visible cards — rebuild bulk approve with updated items.
 			m.tryEnterBulkApprove()
 			return m.scene, nil
 		}
