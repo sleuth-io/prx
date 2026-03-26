@@ -97,6 +97,7 @@ type Model struct {
 	selected    map[itemKey]bool  // (repo, number) -> selected
 	results     map[itemKey]error // (repo, number) -> nil (success) or error; nil map = not done
 	cursor      int
+	offset      int // first visible item index for scrolling
 	approving   bool
 	currentUser string
 	width       int
@@ -182,11 +183,27 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	case "j", "down":
 		if m.cursor < len(m.items)-1 {
 			m.cursor++
+			m.ensureCursorVisible()
 		}
 	case "k", "up":
 		if m.cursor > 0 {
 			m.cursor--
+			m.ensureCursorVisible()
 		}
+	case "pgdown":
+		cap := m.visibleCapacity()
+		m.cursor += cap
+		if m.cursor >= len(m.items) {
+			m.cursor = len(m.items) - 1
+		}
+		m.ensureCursorVisible()
+	case "pgup":
+		cap := m.visibleCapacity()
+		m.cursor -= cap
+		if m.cursor < 0 {
+			m.cursor = 0
+		}
+		m.ensureCursorVisible()
 	case " ", "x":
 		if m.cursor < len(m.items) {
 			key := m.cursorKey()
@@ -231,6 +248,27 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m, func() tea.Msg { return ExitMsg{} }
 	}
 	return m, nil
+}
+
+// visibleCapacity returns how many items fit on screen.
+// Each item is 4 lines (3 content + 1 blank). Header is 2 lines, footer is 1.
+func (m Model) visibleCapacity() int {
+	avail := m.height - 3 // 2 header + 1 footer
+	if avail < 4 {
+		return 1
+	}
+	return avail / 4
+}
+
+// ensureCursorVisible adjusts offset so the cursor is within the visible window.
+func (m *Model) ensureCursorVisible() {
+	cap := m.visibleCapacity()
+	if m.cursor < m.offset {
+		m.offset = m.cursor
+	}
+	if m.cursor >= m.offset+cap {
+		m.offset = m.cursor - cap + 1
+	}
 }
 
 func (m Model) isApproved(key itemKey) bool {
@@ -302,7 +340,14 @@ func (m Model) View() string {
 	}
 	multiRepo := len(repos) > 1
 
-	for i, item := range m.items {
+	cap := m.visibleCapacity()
+	end := m.offset + cap
+	if end > len(m.items) {
+		end = len(m.items)
+	}
+
+	for i := m.offset; i < end; i++ {
+		item := m.items[i]
 		key := itemKey{item.Repo, item.Number}
 
 		// Checkbox state.
