@@ -21,6 +21,7 @@ needs your attention. Review faster and smarter, even after merge.
 - **Risk scoring** - each PR is scored across configurable criteria (blast radius, intent clarity, irreversibility, domain knowledge, novelty) and given a verdict: APPROVE, REVIEW, or INVESTIGATE
 - **Chat-first interface** - the primary interface is a conversation. Ask questions, take PR actions, tune scoring criteria — all through chat
 - **Smart diff viewer** - full-screen diff with per-hunk risk annotations and key hunk preview. Trivial hunks auto-collapse so you see only what needs your brain
+- **Incremental review** - prx tracks what you've seen. On return visits, only new or changed code and comments are expanded. Rebases that don't change code are invisible
 - **Bulk approve** - clear a queue of low-risk PRs in one pass before focusing on the ones that need real attention
 - **Post-merge review** - catch merged PRs that landed without your approval, flag or approve with reactions
 

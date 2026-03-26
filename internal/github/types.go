@@ -18,6 +18,8 @@ type CheckStatus struct {
 }
 
 type ReviewComment struct {
+	ID          int // GitHub comment ID (stable across rebases)
+	InReplyToID int // parent comment ID (0 if not a reply)
 	Author      string
 	Body        string
 	State       string // only set for PR-level reviews

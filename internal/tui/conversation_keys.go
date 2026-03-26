@@ -113,9 +113,11 @@ func (s *ConversationScene) handleConfirmKey(msg tea.KeyMsg) (Scene, tea.Cmd) {
 func (s *ConversationScene) handlePermKey(msg tea.KeyMsg, m *Model) (Scene, tea.Cmd) {
 	switch msg.String() {
 	case "y":
+		logger.Info("[user] permission approved: %s", m.pendingPerm.description)
 		m.pendingPerm.respond(true)
 		m.pendingPerm = nil
 	case "n", "esc":
+		logger.Info("[user] permission denied: %s", m.pendingPerm.description)
 		m.pendingPerm.respond(false)
 		m.pendingPerm = nil
 	}
@@ -145,6 +147,7 @@ func (s *ConversationScene) handleSlashCommand(m *Model) (Scene, tea.Cmd, bool) 
 	name := strings.ToLower(strings.TrimPrefix(input, "/"))
 	slashCmds, _ := commandMap()
 	if cmd, ok := slashCmds[name]; ok {
+		logger.Info("[user] slash command: /%s", name)
 		s.input.Reset()
 		return cmd.Run(s, m)
 	}
@@ -164,6 +167,7 @@ func (s *ConversationScene) handleSlashCommand(m *Model) (Scene, tea.Cmd, bool) 
 func (s *ConversationScene) handleCommandKey(key string, m *Model) (Scene, tea.Cmd, bool) {
 	_, keyCmds := commandMap()
 	if cmd, ok := keyCmds[key]; ok {
+		logger.Info("[user] key command: %s → %s", key, cmd.Name)
 		return cmd.Run(s, m)
 	}
 	return s, nil, false
@@ -183,6 +187,7 @@ func (s *ConversationScene) sendChatMessage(m *Model) tea.Cmd {
 		return nil
 	}
 
+	logger.Info("[user] chat message: %s", truncate(body, 80))
 	s.input.Reset()
 	s.updateInputHeight()
 	card.Chat.StartMessage(body)
@@ -206,6 +211,7 @@ func (s *ConversationScene) sendChatMessage(m *Model) tea.Cmd {
 func (s *ConversationScene) handleActionDone(msg actionDoneMsg, m *Model) (Scene, tea.Cmd) {
 	s.actionDone = true
 	if msg.err != nil {
+		logger.Info("[user] action failed: %s — %v", msg.action, msg.err)
 		s.actionStatus = fmt.Sprintf("%s failed: %s", msg.action, msg.err)
 		s.BuildScrollback(m)
 		return s, nil
@@ -229,6 +235,9 @@ func (s *ConversationScene) handleActionDone(msg actionDoneMsg, m *Model) (Scene
 	default:
 		s.actionStatus = fmt.Sprintf("%s done", msg.action)
 	}
+	logger.Info("[user] action done: %s PR #%d", msg.action, msg.pr)
+	// Snapshot review state on review actions (approve, request-changes, comment, post-merge reactions).
+	m.snapshotCurrentPR()
 	s.BuildScrollback(m)
 	// markPostMergeReacted may have transitioned to bulk approve via
 	// skipToVisibleCard → tryEnterBulkApprove. Return m.scene so the

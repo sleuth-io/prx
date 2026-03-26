@@ -5,6 +5,7 @@ import (
 	"github.com/sleuth-io/prx/internal/ai"
 	"github.com/sleuth-io/prx/internal/app"
 	"github.com/sleuth-io/prx/internal/github"
+	"github.com/sleuth-io/prx/internal/reviewstate"
 	"github.com/sleuth-io/prx/internal/tui/conversation"
 	"github.com/sleuth-io/prx/internal/tui/diff"
 )
@@ -29,6 +30,10 @@ type PRCard struct {
 	UserHasReviewed     bool   // user left a review (approve/reject/comment) pre-merge
 	UserHasReacted      bool   // user already reacted (+1/-1)
 	UserReaction        string // "+1" or "-1" — set when user reacts in this session
+
+	// Incremental review
+	ReviewState   *reviewstate.PRState // last-seen state, loaded from disk
+	HasNewContent bool                 // true if PR has changes since last review (for visibility)
 }
 
 type commentModal struct {

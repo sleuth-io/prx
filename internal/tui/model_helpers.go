@@ -7,13 +7,16 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/sleuth-io/prx/internal/ai"
 	"github.com/sleuth-io/prx/internal/logger"
 	"github.com/sleuth-io/prx/internal/mcp"
+	"github.com/sleuth-io/prx/internal/reviewstate"
 	"github.com/sleuth-io/prx/internal/tui/bulkapprove"
+	"github.com/sleuth-io/prx/internal/tui/diff"
 	"github.com/sleuth-io/prx/internal/tui/scoring"
 )
 
@@ -94,6 +97,9 @@ func (m Model) isCardVisible(card *PRCard) bool {
 	if m.showAllMerged {
 		return true
 	}
+	if card.HasNewContent {
+		return true // new comments since last review — keep visible
+	}
 	return !card.UserHasReviewed && !card.UserHasReacted
 }
 
@@ -144,6 +150,9 @@ func (m *Model) loadCurrentDiff() {
 	if card == nil || card.PR == nil {
 		return
 	}
+	// Compute incremental state BEFORE SetParsedContent so that rebuildViewport()
+	// (called inside SetParsedContent) applies the correct flags in a single pass.
+	m.updateIncrementalState(card)
 	if card.parsedFiles != nil {
 		m.diffView.SetParsedContent(card.parsedFiles, card.PR)
 	} else {
@@ -151,25 +160,78 @@ func (m *Model) loadCurrentDiff() {
 	}
 }
 
+// updateIncrementalState computes incremental review state and stores it on the
+// DiffView (quietly, without triggering a rebuild). The stored state is applied
+// automatically by rebuildViewport() via applyIncrementalFlags().
+func (m *Model) updateIncrementalState(card *PRCard) {
+	if m.reviewStore == nil || card.parsedFiles == nil {
+		m.diffView.SetIncrementalStateQuiet(nil)
+		card.HasNewContent = false
+		return
+	}
+	key := reviewstate.Key(card.Ctx.Repo, card.PR.Number)
+	card.ReviewState = m.reviewStore.Get(key)
+	if card.ReviewState == nil {
+		m.diffView.SetIncrementalStateQuiet(nil)
+		card.HasNewContent = false
+		return
+	}
+	fileNames, fileHunks := diff.FileHunkInfo(card.parsedFiles)
+	commentDigests := diff.CommentDigestsFromPR(card.PR)
+	state := reviewstate.ComputeIncremental(fileNames, fileHunks, commentDigests, card.ReviewState)
+	card.HasNewContent = state.HasChanges || state.HasNewComments
+	logger.Info("incremental state for PR #%d: %d new hunks, %d new comments, %d edited, mode=%v",
+		card.PR.Number, state.NewHunkCount, state.NewCommentCount, state.EditedCommentCount,
+		state.HasChanges || state.HasNewComments)
+	m.diffView.SetIncrementalStateQuiet(state)
+}
+
+// snapshotCurrentPR saves the current PR's hunk and comment digests as "seen".
+func (m *Model) snapshotCurrentPR() {
+	card := m.currentCard()
+	if card == nil || card.parsedFiles == nil || m.reviewStore == nil {
+		return
+	}
+	hunkDigests := diff.DigestsFromFiles(card.parsedFiles)
+	commentDigests := diff.CommentDigestsFromPR(card.PR)
+	key := reviewstate.Key(card.Ctx.Repo, card.PR.Number)
+
+	// Don't re-snapshot if nothing changed — prevents bouncing between
+	// PRs from resetting the timestamp.
+	if existing := m.reviewStore.Get(key); existing != nil &&
+		reviewstate.HunkDigestsEqual(existing.Hunks, hunkDigests) &&
+		reviewstate.CommentDigestsEqual(existing.Comments, commentDigests) {
+		return
+	}
+
+	m.reviewStore.Set(key, &reviewstate.PRState{
+		SeenAt:   time.Now(),
+		Hunks:    hunkDigests,
+		Comments: commentDigests,
+	})
+	logger.Info("snapshot saved for PR #%d (%d hunks, %d comments)", card.PR.Number, len(hunkDigests), len(commentDigests))
+}
+
 func (m *Model) buildRenderData(card *PRCard) scoring.RenderData {
 	return scoring.RenderData{
-		Repo:             card.Ctx.Repo,
-		MultiRepo:        m.multiRepo(),
-		PR:               card.PR,
-		Assessment:       card.Assessment,
-		Score:            card.WeightedScore,
-		Verdict:          card.Verdict,
-		Scoring:          card.Scoring,
-		ScoringErr:       card.ScoringErr,
-		SpinnerView:      m.spinner.View(),
-		Criteria:         m.app.Config.Criteria,
-		ScoringToolCount: card.ScoringToolCount,
-		ScoringLastTool:  card.ScoringLastTool,
-		ScoringStatus:    card.ScoringStatus,
-		ParsedFiles:      card.parsedFiles,
-		ImageCache:       m.imageCache,
-		PostMerge:        card.PostMerge,
-		UserReaction:     card.UserReaction,
+		Repo:               card.Ctx.Repo,
+		MultiRepo:          m.multiRepo(),
+		PR:                 card.PR,
+		Assessment:         card.Assessment,
+		Score:              card.WeightedScore,
+		Verdict:            card.Verdict,
+		Scoring:            card.Scoring,
+		ScoringErr:         card.ScoringErr,
+		SpinnerView:        m.spinner.View(),
+		Criteria:           m.app.Config.Criteria,
+		ScoringToolCount:   card.ScoringToolCount,
+		ScoringLastTool:    card.ScoringLastTool,
+		ScoringStatus:      card.ScoringStatus,
+		ParsedFiles:        card.parsedFiles,
+		ImageCache:         m.imageCache,
+		PostMerge:          card.PostMerge,
+		UserReaction:       card.UserReaction,
+		IncrementalSummary: m.diffView.IncrementalSummary(),
 	}
 }
 

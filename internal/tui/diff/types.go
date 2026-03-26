@@ -3,6 +3,7 @@ package diff
 import (
 	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/sleuth-io/prx/internal/reviewstate"
 )
 
 var (
@@ -24,6 +25,11 @@ var (
 	cursorLineStyle    = lipgloss.NewStyle().Background(lipgloss.Color("238"))
 	cursorHunkStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("230")).Background(lipgloss.Color("26"))
 	cursorTrivialStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Background(lipgloss.Color("240"))
+
+	// Incremental review styles
+	diffSeenStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("242")).Background(lipgloss.Color("235")).Faint(true)
+	diffNewBadge    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#000000")).Background(lipgloss.Color("82")).Padding(0, 1)
+	diffEditedBadge = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#ffffff")).Background(lipgloss.Color("69")).Padding(0, 1)
 )
 
 // collapsibleKind identifies what kind of item is at a viewport line.
@@ -61,6 +67,8 @@ type Hunk struct {
 	Annotated     bool // true if AI provided an annotation for this hunk
 	TrivialReason string
 	StartLine     int // new-file line number from fragment header
+
+	ReviewStatus reviewstate.HunkStatus // incremental: Seen or New
 }
 
 // File is a parsed diff file with pre-rendered colored lines.
@@ -72,12 +80,16 @@ type File struct {
 
 // CommentItem is a single comment (inline or top-level).
 type CommentItem struct {
+	ID           int // GitHub comment ID
+	InReplyToID  int // parent comment ID (0 if not a reply)
 	Author       string
 	Path         string // empty for top-level
 	LineNum      int    // diff line number (0 if not line-specific)
 	Body         string
 	Collapsed    bool
 	Pending      bool   // true while the API call is in-flight
+	IsNew        bool   // incremental: comment not in last-seen set
+	IsEdited     bool   // incremental: same ID, different body hash
 	renderedBody string // cached markdown render
 }
 
@@ -101,6 +113,9 @@ type DiffView struct {
 	width          int
 	height         int
 	Focused        bool
+
+	incrementalMode bool                          // true when showing incremental view
+	incremental     *reviewstate.IncrementalState // nil if no prior review state
 }
 
 // DiffQuote captures a quoted line from the diff for embedding in chat.

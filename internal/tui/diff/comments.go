@@ -145,6 +145,15 @@ func (d DiffView) TitleWithCommentCount() string {
 	return "Diff"
 }
 
+// titleString returns the title with incremental summary if applicable.
+func (d DiffView) titleString() string {
+	base := d.TitleWithCommentCount()
+	if summary := d.IncrementalSummary(); summary != "" {
+		return base + " (" + summary + ")"
+	}
+	return base
+}
+
 func renderCommentGroup(g *CommentGroup) string {
 	count := style.DimStyle.Render(fmt.Sprintf("(%d)", len(g.Comments)))
 	if g.Collapsed {
@@ -154,9 +163,20 @@ func renderCommentGroup(g *CommentGroup) string {
 }
 
 func renderComment(c *CommentItem, width int, grouped bool) []string {
+	isReply := c.InReplyToID != 0
+	indent := ""
+	if isReply {
+		indent = "  " // indent replies
+	}
+
 	var header string
 	if grouped {
-		header = "  "
+		header = "  " + indent
+		if c.IsNew {
+			header += diffNewBadge.Render("new") + " "
+		} else if c.IsEdited {
+			header += diffEditedBadge.Render("edited") + " "
+		}
 	} else {
 		prefix := ""
 		if c.Path != "" {
@@ -166,7 +186,22 @@ func renderComment(c *CommentItem, width int, grouped bool) []string {
 		if c.Pending {
 			pendingMark = style.DimStyle.Render(" \u2026posting")
 		}
-		header = "\U0001f4ac " + commentAuthorStyle.Render(c.Author) + pendingMark + "  " + prefix
+		badge := ""
+		if c.IsNew {
+			badge = " " + diffNewBadge.Render("new")
+		} else if c.IsEdited {
+			badge = " " + diffEditedBadge.Render("edited")
+		}
+		replyIcon := "\U0001f4ac "
+		if isReply {
+			replyIcon = "  ↳ "
+		}
+		header = indent + replyIcon + commentAuthorStyle.Render(c.Author) + pendingMark + badge + "  " + prefix
+	}
+
+	bodyWidth := width - 4 - len(indent)
+	if bodyWidth < 20 {
+		bodyWidth = 20
 	}
 
 	if c.Collapsed {
@@ -178,12 +213,14 @@ func renderComment(c *CommentItem, width int, grouped bool) []string {
 	}
 
 	if c.renderedBody == "" {
-		c.renderedBody = style.RenderMarkdown(c.Body, width-4)
+		c.renderedBody = style.RenderMarkdown(c.Body, bodyWidth)
 	}
-	body := commentExpandedStyle.Width(width - 4).Render(c.renderedBody)
+	body := commentExpandedStyle.Width(bodyWidth).Render(c.renderedBody)
 	var out []string
 	out = append(out, header+style.CollapseHint.Render("  [\u2190 collapse]"))
-	out = append(out, strings.Split(body, "\n")...)
+	for _, line := range strings.Split(body, "\n") {
+		out = append(out, indent+line)
+	}
 	return out
 }
 

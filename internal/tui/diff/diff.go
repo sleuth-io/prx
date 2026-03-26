@@ -1,12 +1,14 @@
 package diff
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/sleuth-io/prx/internal/github"
+	"github.com/sleuth-io/prx/internal/reviewstate"
 	"github.com/sleuth-io/prx/internal/tui/style"
 )
 
@@ -40,7 +42,7 @@ func (d *DiffView) SetParsedContent(files []*File, pr *github.PR) {
 	groupByAuthor := map[string]*CommentGroup{}
 	d.commentGroups = nil
 	for _, c := range pr.Comments {
-		item := &CommentItem{Author: c.Author, Body: c.Body, Collapsed: true}
+		item := &CommentItem{ID: c.ID, Author: c.Author, Body: c.Body, Collapsed: true}
 		if g, ok := groupByAuthor[c.Author]; ok {
 			g.Comments = append(g.Comments, item)
 		} else {
@@ -52,11 +54,13 @@ func (d *DiffView) SetParsedContent(files []*File, pr *github.PR) {
 	d.inline = nil
 	for _, c := range pr.InlineComments {
 		d.inline = append(d.inline, &CommentItem{
-			Author:    c.Author,
-			Path:      c.Path,
-			LineNum:   c.Line,
-			Body:      c.Body,
-			Collapsed: true,
+			ID:          c.ID,
+			InReplyToID: c.InReplyToID,
+			Author:      c.Author,
+			Path:        c.Path,
+			LineNum:     c.Line,
+			Body:        c.Body,
+			Collapsed:   true,
 		})
 	}
 
@@ -151,16 +155,21 @@ func (d *DiffView) ExpandCurrentFile() {
 	case kindComment:
 		if c.comment.Collapsed {
 			c.comment.Collapsed = false
+			// If this is an inline comment, also expand its parent hunk for context
+			if c.comment.Path != "" {
+				d.expandHunkForComment(c.comment)
+			}
 			d.rebuildAndStay(c)
 		}
 	}
 }
 
 // ExpandMore expands one level at a time:
-//  1. filesGroup collapsed        → expand filesGroup
-//  2. any file collapsed          → expand all files
-//  3. any hunk collapsed          → expand all hunks
-//  4. any comment group collapsed → expand all comment groups
+//  1. filesGroup collapsed           → expand filesGroup
+//  2. any file collapsed             → expand all files
+//  3. any hunk collapsed             → expand all hunks
+//  4. any comment group collapsed    → expand all comment groups
+//  5. any comment collapsed          → expand all comments (inline + grouped)
 func (d *DiffView) ExpandMore() {
 	if d.filesCollapsed {
 		d.filesCollapsed = false
@@ -198,14 +207,22 @@ func (d *DiffView) ExpandMore() {
 			return
 		}
 	}
+	if d.expandAllComments() {
+		d.rebuildViewport()
+	}
 }
 
 // CollapseMore collapses one level at a time (reverse of ExpandMore):
-//  1. any comment group expanded → collapse all comment groups
-//  2. any hunk expanded          → collapse all hunks (keep files visible)
-//  3. any file expanded          → collapse all files (keep filesGroup visible)
-//  4. otherwise                  → collapse filesGroup
+//  1. any comment expanded        → collapse all comments (inline + grouped)
+//  2. any comment group expanded  → collapse all comment groups
+//  3. any hunk expanded           → collapse all hunks (keep files visible)
+//  4. any file expanded           → collapse all files (keep filesGroup visible)
+//  5. otherwise                   → collapse filesGroup
 func (d *DiffView) CollapseMore() {
+	if d.collapseAllComments() {
+		d.rebuildViewport()
+		return
+	}
 	for _, g := range d.commentGroups {
 		if !g.Collapsed {
 			for _, g2 := range d.commentGroups {
@@ -241,6 +258,46 @@ func (d *DiffView) CollapseMore() {
 	d.rebuildViewport()
 }
 
+// expandAllComments expands all collapsed comments (inline + grouped). Returns true if any changed.
+func (d *DiffView) expandAllComments() bool {
+	changed := false
+	for _, c := range d.inline {
+		if c.Collapsed {
+			c.Collapsed = false
+			changed = true
+		}
+	}
+	for _, g := range d.commentGroups {
+		for _, c := range g.Comments {
+			if c.Collapsed {
+				c.Collapsed = false
+				changed = true
+			}
+		}
+	}
+	return changed
+}
+
+// collapseAllComments collapses all expanded comments (inline + grouped). Returns true if any changed.
+func (d *DiffView) collapseAllComments() bool {
+	changed := false
+	for _, c := range d.inline {
+		if !c.Collapsed {
+			c.Collapsed = true
+			changed = true
+		}
+	}
+	for _, g := range d.commentGroups {
+		for _, c := range g.Comments {
+			if !c.Collapsed {
+				c.Collapsed = true
+				changed = true
+			}
+		}
+	}
+	return changed
+}
+
 func (d *DiffView) AtTop() bool {
 	return d.cursorLine == 0
 }
@@ -269,7 +326,8 @@ func (d *DiffView) PrevFile() {
 
 func (d *DiffView) NextHunk() {
 	for _, c := range d.collapsibles {
-		if c.kind == kindHunk && c.lineIdx > d.cursorLine {
+		if c.kind == kindHunk && c.lineIdx > d.cursorLine &&
+			!d.files[c.fileIdx].Hunks[c.hunkIdx].Collapsed {
 			d.MoveCursor(c.lineIdx - d.cursorLine)
 			return
 		}
@@ -280,13 +338,214 @@ func (d *DiffView) PrevHunk() {
 	var best *collapsible
 	for i := range d.collapsibles {
 		c := &d.collapsibles[i]
-		if c.kind == kindHunk && c.lineIdx < d.cursorLine {
+		if c.kind == kindHunk && c.lineIdx < d.cursorLine &&
+			!d.files[c.fileIdx].Hunks[c.hunkIdx].Collapsed {
 			best = c
 		}
 	}
 	if best != nil {
 		d.MoveCursor(best.lineIdx - d.cursorLine)
 	}
+}
+
+// SetIncrementalState stores the incremental review state and rebuilds the viewport.
+// The actual flag application (hunk status, comment badges, collapse state) happens
+// inside rebuildViewport() via applyIncrementalFlags(), so callers of SetParsedContent
+// never need to remember to apply incremental state separately.
+func (d *DiffView) SetIncrementalState(state *reviewstate.IncrementalState) {
+	d.setIncrementalStateQuiet(state)
+	d.rebuildViewport()
+}
+
+// setIncrementalStateQuiet stores the state without triggering a rebuild.
+// Used by loadCurrentDiff to set state before SetParsedContent (which rebuilds).
+func (d *DiffView) setIncrementalStateQuiet(state *reviewstate.IncrementalState) {
+	d.incremental = state
+	if state == nil {
+		d.incrementalMode = false
+	} else {
+		d.incrementalMode = state.HasChanges || state.HasNewComments
+	}
+}
+
+// applyIncrementalFlags sets ReviewStatus on hunks, IsNew/IsEdited on comments,
+// and applies collapse/expand state for incremental mode. Called at the top of
+// rebuildViewport() so incremental state is always applied regardless of which
+// code path triggered the rebuild.
+func (d *DiffView) applyIncrementalFlags() {
+	// Reset all incremental flags (SetParsedContent creates fresh objects)
+	for _, f := range d.files {
+		for _, h := range f.Hunks {
+			h.ReviewStatus = reviewstate.StatusSeen
+		}
+	}
+	for _, c := range d.inline {
+		c.IsNew = false
+		c.IsEdited = false
+	}
+	for _, g := range d.commentGroups {
+		for _, c := range g.Comments {
+			c.IsNew = false
+			c.IsEdited = false
+		}
+	}
+
+	if d.incremental == nil || !d.incrementalMode {
+		return
+	}
+	state := d.incremental
+
+	// Apply hunk status
+	for _, f := range d.files {
+		hunkStatuses, ok := state.HunkStatus[f.Name]
+		if !ok {
+			continue
+		}
+		for hi, h := range f.Hunks {
+			if status, exists := hunkStatuses[hi]; exists {
+				h.ReviewStatus = status
+			}
+		}
+	}
+
+	// Apply comment status flags — new/edited comments start expanded
+	for _, c := range d.inline {
+		if cs, ok := state.CommentStatus[c.ID]; ok {
+			c.IsNew = cs == reviewstate.CommentNew
+			c.IsEdited = cs == reviewstate.CommentEdited
+			if c.IsNew || c.IsEdited {
+				c.Collapsed = false
+			}
+		}
+	}
+	for _, g := range d.commentGroups {
+		for _, c := range g.Comments {
+			if cs, ok := state.CommentStatus[c.ID]; ok {
+				c.IsNew = cs == reviewstate.CommentNew
+				c.IsEdited = cs == reviewstate.CommentEdited
+				if c.IsNew || c.IsEdited {
+					c.Collapsed = false
+				}
+			}
+		}
+	}
+
+	// Apply incremental collapse/expand
+	for _, f := range d.files {
+		allSeen := true
+		hasNewComments := false
+		for hi, h := range f.Hunks {
+			status := reviewstate.StatusSeen
+			if hunkStatuses, ok := state.HunkStatus[f.Name]; ok {
+				if s, ok2 := hunkStatuses[hi]; ok2 {
+					status = s
+				}
+			}
+			if status == reviewstate.StatusNew {
+				h.Collapsed = false
+				allSeen = false
+			} else if d.hunkHasNewComment(f.Name, h) {
+				// Seen hunk with new inline comment: expand to show code context
+				h.Collapsed = false
+				hasNewComments = true
+			} else {
+				h.Collapsed = true
+			}
+		}
+		if allSeen && !hasNewComments {
+			f.Collapsed = true
+		} else {
+			f.Collapsed = false
+		}
+	}
+
+	// Auto-expand/collapse comment groups
+	for _, g := range d.commentGroups {
+		hasNew := false
+		for _, c := range g.Comments {
+			if c.IsNew || c.IsEdited {
+				hasNew = true
+				break
+			}
+		}
+		g.Collapsed = !hasNew
+	}
+}
+
+// SetIncrementalStateQuiet stores the state without triggering a rebuild.
+// Exported for use by the TUI layer before calling SetParsedContent.
+func (d *DiffView) SetIncrementalStateQuiet(state *reviewstate.IncrementalState) {
+	d.setIncrementalStateQuiet(state)
+}
+
+// ClearIncrementalMode disables incremental mode so that user-initiated
+// expand/collapse actions are not overridden by applyIncrementalFlags.
+func (d *DiffView) ClearIncrementalMode() {
+	d.incrementalMode = false
+}
+
+// expandHunkForComment finds the hunk containing an inline comment and expands it.
+func (d *DiffView) expandHunkForComment(c *CommentItem) {
+	for _, f := range d.files {
+		if f.Name != c.Path {
+			continue
+		}
+		for _, h := range f.Hunks {
+			if c.LineNum >= h.StartLine && c.LineNum < h.StartLine+len(h.LineNums) {
+				h.Collapsed = false
+				f.Collapsed = false
+				return
+			}
+		}
+		// Fallback: if we couldn't match a specific hunk, expand the first one
+		if len(f.Hunks) > 0 {
+			f.Collapsed = false
+		}
+		return
+	}
+}
+
+// hunkHasNewComment checks if any inline comment on a hunk's file/line range is new or edited.
+func (d *DiffView) hunkHasNewComment(fileName string, h *Hunk) bool {
+	for _, c := range d.inline {
+		if c.Path != fileName {
+			continue
+		}
+		if !c.IsNew && !c.IsEdited {
+			continue
+		}
+		// Check if the comment's line falls within this hunk's range
+		if c.LineNum >= h.StartLine && c.LineNum < h.StartLine+len(h.LineNums) {
+			return true
+		}
+	}
+	return false
+}
+
+// IncrementalSummary returns a summary string like "3 new, 2 new comments".
+func (d *DiffView) IncrementalSummary() string {
+	if d.incremental == nil || !d.incrementalMode {
+		return ""
+	}
+	var parts []string
+	if d.incremental.NewHunkCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d new", d.incremental.NewHunkCount))
+	}
+	if d.incremental.NewCommentCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d new comments", d.incremental.NewCommentCount))
+	}
+	if d.incremental.EditedCommentCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d edited", d.incremental.EditedCommentCount))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, ", ")
+}
+
+// IncrementalMode returns whether the diff view is in incremental mode.
+func (d *DiffView) IncrementalMode() bool {
+	return d.incrementalMode
 }
 
 // ScrollToHunk scrolls to the hunk matching the given file and start line (plus/minus 3 fuzzy).
@@ -425,7 +684,7 @@ func (d DiffView) View() string {
 	if width == 0 {
 		width = 80
 	}
-	title := style.RenderPanelTitle(d.TitleWithCommentCount(), hint, d.Focused, width)
+	title := style.RenderPanelTitle(d.titleString(), hint, d.Focused, width)
 	return lipgloss.JoinVertical(lipgloss.Left, title, d.ViewContent())
 }
 
@@ -439,7 +698,7 @@ func (d DiffView) ViewWithModal(modal string) string {
 	if width == 0 {
 		width = 80
 	}
-	title := style.RenderPanelTitle(d.TitleWithCommentCount(), hint, d.Focused, width)
+	title := style.RenderPanelTitle(d.titleString(), hint, d.Focused, width)
 
 	vpHeight := d.viewport.Height
 

@@ -397,7 +397,7 @@ func getComments(repo string, number int) ([]ReviewComment, error) {
 	out, err := exec.Command("gh", "api",
 		fmt.Sprintf("repos/%s/issues/%d/comments", repo, number),
 		"--paginate",
-		"--jq", `.[] | {author: .user.login, body: .body, submitted_at: .created_at}`,
+		"--jq", `.[] | {id: .id, author: .user.login, body: .body, submitted_at: .created_at}`,
 	).Output()
 	if err != nil || len(strings.TrimSpace(string(out))) == 0 {
 		return nil, nil
@@ -416,7 +416,12 @@ func getComments(repo string, number int) ([]ReviewComment, error) {
 		if body == "" || body == "<nil>" {
 			continue
 		}
+		var commentID int
+		if id, ok := r["id"].(float64); ok {
+			commentID = int(id)
+		}
 		comments = append(comments, ReviewComment{
+			ID:          commentID,
 			Author:      fmt.Sprintf("%v", r["author"]),
 			Body:        body,
 			SubmittedAt: fmt.Sprintf("%v", r["submitted_at"]),
@@ -429,7 +434,7 @@ func getInlineComments(repo string, number int) ([]ReviewComment, error) {
 	out, err := exec.Command("gh", "api",
 		fmt.Sprintf("repos/%s/pulls/%d/comments", repo, number),
 		"--paginate",
-		"--jq", `.[] | {author: .user.login, body: .body, path: .path, line: (.line // .original_line // 0), submitted_at: .created_at}`,
+		"--jq", `.[] | {id: .id, in_reply_to_id: (.in_reply_to_id // 0), author: .user.login, body: .body, path: .path, line: (.line // .original_line // 0), submitted_at: .created_at}`,
 	).Output()
 	if err != nil || len(strings.TrimSpace(string(out))) == 0 {
 		return nil, nil
@@ -452,7 +457,17 @@ func getInlineComments(repo string, number int) ([]ReviewComment, error) {
 		if l, ok := r["line"].(float64); ok {
 			line = int(l)
 		}
+		var commentID int
+		if id, ok := r["id"].(float64); ok {
+			commentID = int(id)
+		}
+		var inReplyToID int
+		if id, ok := r["in_reply_to_id"].(float64); ok {
+			inReplyToID = int(id)
+		}
 		comments = append(comments, ReviewComment{
+			ID:          commentID,
+			InReplyToID: inReplyToID,
 			Author:      fmt.Sprintf("%v", r["author"]),
 			Body:        body,
 			Path:        fmt.Sprintf("%v", r["path"]),
