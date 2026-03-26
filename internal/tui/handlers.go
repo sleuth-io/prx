@@ -359,7 +359,7 @@ func (m *Model) handleDiffParsed(msg prDiffParsedMsg) (Model, tea.Cmd) {
 		applyHunkAnnotations(card)
 	}
 	if card := m.currentCard(); card != nil && card.Ctx.Repo == msg.repo && card.PR.Number == msg.prNumber {
-		m.diffView.SetParsedContent(card.parsedFiles, card.PR)
+		m.loadCurrentDiff()
 	}
 	return *m, nil
 }
@@ -456,7 +456,7 @@ func (m *Model) handlePRScored(msg prScoredMsg) (Model, tea.Cmd) {
 	if card := m.currentCard(); card != nil && card.Ctx.Repo == msg.repo && card.PR.Number == msg.prNumber {
 		m.buildScrollback()
 		if card.parsedFiles != nil {
-			m.diffView.SetParsedContent(card.parsedFiles, card.PR)
+			m.loadCurrentDiff()
 		}
 		// Pre-warm Claude for the current visible PR once assessment is ready.
 		m.tryPreWarm(card)
@@ -466,6 +466,7 @@ func (m *Model) handlePRScored(msg prScoredMsg) (Model, tea.Cmd) {
 }
 
 func (m *Model) handlePRRefreshed(msg prRefreshedMsg) (Model, tea.Cmd) {
+	logger.Info("[refresh] PR #%d refreshed (newDiff=%v)", msg.prNumber, msg.newDiff != "")
 	if cs, ok := m.scene.(*ConversationScene); ok && !cs.actionDone {
 		cs.actionStatus = ""
 	}
@@ -531,13 +532,14 @@ func (m *Model) handlePRRefreshed(msg prRefreshedMsg) (Model, tea.Cmd) {
 		}
 	}
 	if card := m.currentCard(); card != nil && card.Ctx.Repo == msg.repo && card.PR.Number == msg.prNumber {
-		m.buildScrollback()
 		if shaChanged {
+			m.buildScrollback()
 			return *m, tea.Batch(parseDiffCmd(card.Ctx.Repo, card.PR), rescoreCmd)
 		}
 		if card.parsedFiles != nil {
-			m.diffView.SetParsedContent(card.parsedFiles, card.PR)
+			m.loadCurrentDiff()
 		}
+		m.buildScrollback()
 	}
 	return *m, rescoreCmd
 }

@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/sleuth-io/prx/internal/github"
+	"github.com/sleuth-io/prx/internal/logger"
 	"github.com/sleuth-io/prx/internal/tui/style"
 )
 
@@ -81,12 +82,16 @@ func (s *DiffOverlayScene) handleKey(msg tea.KeyMsg, m *Model) (Scene, tea.Cmd) 
 	case "ctrl+q":
 		return s, m.cleanupWorktrees()
 	case "q", "esc", "ctrl+d":
+		logger.Info("[user] diff overlay: exit (%s)", msg.String())
+		// Snapshot review state on diff exit
+		m.snapshotCurrentPR()
 		// Return to conversation scene
 		m.diffView.Focused = false
 		s.conv.Resize(s.width, s.height)
 		s.conv.BuildScrollback(m)
 		return s.conv, s.conv.FocusInput()
 	case "?":
+		logger.Info("[user] diff overlay: quote line")
 		// Quote current line into textarea and jump to conversation
 		quote := m.diffView.CurrentQuote()
 		m.diffView.Focused = false
@@ -105,21 +110,26 @@ func (s *DiffOverlayScene) handleKey(msg tea.KeyMsg, m *Model) (Scene, tea.Cmd) 
 		s.conv.BuildScrollback(m)
 		return s.conv, s.conv.FocusInput()
 	case "c":
+		logger.Info("[user] diff overlay: open comment modal")
 		if card := m.currentCard(); card != nil {
 			path, line := m.diffView.CurrentLineTarget()
 			s.openCommentModal(card, path != "", path, line)
 			return s, s.modal.textarea.Focus()
 		}
 	case "shift+left", "<":
+		m.diffView.ClearIncrementalMode()
 		m.diffView.CollapseMore()
 		return s, nil
 	case "shift+right", ">":
+		m.diffView.ClearIncrementalMode()
 		m.diffView.ExpandMore()
 		return s, nil
 	case "left":
+		m.diffView.ClearIncrementalMode()
 		m.diffView.CollapseCurrentFile()
 		return s, nil
 	case "right":
+		m.diffView.ClearIncrementalMode()
 		m.diffView.ExpandCurrentFile()
 		return s, nil
 	}

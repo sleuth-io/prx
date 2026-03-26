@@ -34,24 +34,25 @@ var (
 
 // RenderData contains everything needed to render the assessment.
 type RenderData struct {
-	Repo             string // "owner/name" — shown in title when MultiRepo is true
-	MultiRepo        bool   // true when reviewing across multiple repos
-	PR               *github.PR
-	Assessment       *ai.Assessment
-	Score            float64
-	Verdict          string
-	Scoring          bool
-	ScoringErr       error
-	SpinnerView      string
-	Criteria         []config.Criterion
-	ScoringToolCount int
-	ScoringLastTool  string
-	ScoringStatus    string
-	ParsedFiles      []*diff.File
-	ImageCache       *imgrender.Cache
-	BodyEndLine      int // set by buildContent: line after body text (for image placement)
-	PostMerge        bool
-	UserReaction     string // "+1" or "-1" if user reacted this session
+	Repo               string // "owner/name" — shown in title when MultiRepo is true
+	MultiRepo          bool   // true when reviewing across multiple repos
+	PR                 *github.PR
+	Assessment         *ai.Assessment
+	Score              float64
+	Verdict            string
+	Scoring            bool
+	ScoringErr         error
+	SpinnerView        string
+	Criteria           []config.Criterion
+	ScoringToolCount   int
+	ScoringLastTool    string
+	ScoringStatus      string
+	ParsedFiles        []*diff.File
+	ImageCache         *imgrender.Cache
+	IncrementalSummary string // e.g., "2 new hunks, 3 new comments" — set when incremental state exists
+	BodyEndLine        int    // set by buildContent: line after body text (for image placement)
+	PostMerge          bool
+	UserReaction       string // "+1" or "-1" if user reacted this session
 }
 
 // WeightedScore calculates the weighted score from an assessment.
@@ -262,6 +263,10 @@ func buildContent(data *RenderData, vpWidth int) string {
 		below = append(below, renderGuideRow("Summary", a.Guide.Summary, wrapW))
 		below = append(below, renderGuideRow("Risk", a.Guide.Risk, wrapW))
 		below = append(below, renderGuideRow("Focus", a.Guide.Focus, wrapW))
+		if data.IncrementalSummary != "" {
+			labelStr := "  " + guideNewLabelStyle.Render("New")
+			below = append(below, labelStr+"  "+guideNewTextStyle.Render(data.IncrementalSummary))
+		}
 	} else if a.RiskSummary != "" || a.ReviewNotes != "" {
 		// Fallback for cached assessments without structured guide.
 		below = append(below, style.DimStyle.Render("  ── Review Guide ──"))
@@ -298,6 +303,14 @@ var (
 			Padding(0, 1).
 			Width(9) // fixed width so all labels align
 	guideTextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+
+	guideNewLabelStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("#000000")).
+				Background(lipgloss.Color("82")).
+				Padding(0, 1).
+				Width(9)
+	guideNewTextStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("82"))
 )
 
 const guideLabelCol = 2 + 9 + 2 // indent + label width + gap

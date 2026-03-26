@@ -9,6 +9,7 @@ import (
 
 	"github.com/sleuth-io/prx/internal/app"
 	"github.com/sleuth-io/prx/internal/imgrender"
+	"github.com/sleuth-io/prx/internal/reviewstate"
 	"github.com/sleuth-io/prx/internal/tui/diff"
 	"github.com/sleuth-io/prx/internal/tui/perm"
 )
@@ -63,6 +64,9 @@ type Model struct {
 	showAllMerged   bool // when true, show all merged PRs including already-reviewed/reacted
 	openListsDone   int  // count of repos whose open PR list fetch has returned
 	mergedListsDone int  // count of repos whose merged PR list fetch has returned
+
+	// Incremental review
+	reviewStore *reviewstate.Store
 }
 
 func New(a *app.App) Model {
@@ -85,13 +89,14 @@ func New(a *app.App) Model {
 	}
 
 	return Model{
-		app:        a,
-		spinner:    s,
-		scene:      cs,
-		convScene:  cs,
-		diffView:   diff.NewDiffView(80, 20),
-		imageCache: imgCache,
-		startupLog: log,
+		app:         a,
+		spinner:     s,
+		scene:       cs,
+		convScene:   cs,
+		diffView:    diff.NewDiffView(80, 20),
+		imageCache:  imgCache,
+		startupLog:  log,
+		reviewStore: reviewstate.Load(),
 	}
 }
 

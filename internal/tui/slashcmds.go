@@ -56,9 +56,12 @@ func commands() []Command {
 				s.input.Blur()
 				m.diffView.Focused = true
 				ds := newDiffOverlayScene(s, m.width, m.height)
-				if card := m.currentCard(); card != nil && card.Assessment != nil && card.Assessment.KeyHunk != nil {
-					kh := card.Assessment.KeyHunk
-					m.diffView.ScrollToHunk(kh.File, kh.StartLine)
+				// In incremental mode, skip key hunk scroll — user navigates with }
+				if !m.diffView.IncrementalMode() {
+					if card := m.currentCard(); card != nil && card.Assessment != nil && card.Assessment.KeyHunk != nil {
+						kh := card.Assessment.KeyHunk
+						m.diffView.ScrollToHunk(kh.File, kh.StartLine)
+					}
 				}
 				return ds, nil, true
 			},

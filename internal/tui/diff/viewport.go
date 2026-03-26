@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/sleuth-io/prx/internal/reviewstate"
 	"github.com/sleuth-io/prx/internal/tui/style"
 )
 
@@ -47,6 +48,8 @@ func (d *DiffView) collapsibleLineIdx(target *collapsible) int {
 }
 
 func (d *DiffView) rebuildViewport() {
+	d.applyIncrementalFlags()
+
 	var lines []string
 	d.collapsibles = d.collapsibles[:0]
 
@@ -106,7 +109,14 @@ func (d *DiffView) rebuildViewport() {
 
 			allTrivial := len(f.Hunks) > 0 && allHunksTrivial(f.Hunks)
 			fheader := diffFileStyle.Render("  ── " + f.Name + " ")
-			if allTrivial {
+			if d.incrementalMode {
+				if allNew := d.fileAllNew(f); allNew {
+					fheader += diffNewBadge.Render("new file") + " "
+				}
+				if nc := d.fileNewCommentCount(f); nc > 0 {
+					fheader += diffNewBadge.Render(fmt.Sprintf("%d new comments", nc)) + " "
+				}
+			} else if allTrivial {
 				fheader += diffHunkTrivialStyle.Render("(all trivial) ")
 			}
 			if f.Collapsed {
@@ -126,7 +136,9 @@ func (d *DiffView) rebuildViewport() {
 						}
 						content += "  [→ expand]"
 						hunkStyle := diffHunkTrivialStyle
-						if h.Annotated && !h.Trivial {
+						if d.incrementalMode && h.ReviewStatus == reviewstate.StatusSeen {
+							hunkStyle = diffSeenStyle
+						} else if h.Annotated && !h.Trivial {
 							hunkStyle = diffHunkHeaderStyle
 						}
 						d.collapsibles = append(d.collapsibles, collapsible{
@@ -138,10 +150,34 @@ func (d *DiffView) rebuildViewport() {
 							baseStyle:  hunkStyle,
 						})
 						lines = append(lines, hunkStyle.Width(d.width).Render(content))
+
+						// In incremental mode, show new/edited inline comments
+						// even when the hunk is collapsed (code unchanged but comments are new).
+						if d.incrementalMode {
+							for _, ic := range inlineByFile[f.Name] {
+								if rendered[ic] || (!ic.IsNew && !ic.IsEdited) {
+									continue
+								}
+								// Check if this comment belongs to this hunk's line range
+								if ic.LineNum >= h.StartLine && ic.LineNum < h.StartLine+len(h.LineNums) {
+									rendered[ic] = true
+									lines = append(lines, "")
+									d.collapsibles = append(d.collapsibles, collapsible{
+										lineIdx: len(lines),
+										kind:    kindComment,
+										comment: ic,
+									})
+									lines = append(lines, renderComment(ic, d.width, false)...)
+								}
+							}
+						}
 					} else {
 						content := hunkLabel(f.Name, h)
 						rawContent := content
-						if h.Annotated && !h.Trivial {
+						if d.incrementalMode && h.ReviewStatus == reviewstate.StatusNew {
+							content += "  " + diffNewBadge.Render("new")
+							rawContent += "  new"
+						} else if h.Annotated && !h.Trivial {
 							content += "  " + diffImportantStyle.Render(" "+h.TrivialReason+" ")
 							rawContent += "  " + h.TrivialReason
 						}
@@ -242,6 +278,34 @@ func allHunksTrivial(hunks []*Hunk) bool {
 		}
 	}
 	return true
+}
+
+// fileAllNew returns true if all hunks in a file are new (incremental mode).
+func (d *DiffView) fileAllNew(f *File) bool {
+	if d.incremental == nil {
+		return false
+	}
+	hunkStatuses, ok := d.incremental.HunkStatus[f.Name]
+	if !ok {
+		return false
+	}
+	for hi := range f.Hunks {
+		if s, ok := hunkStatuses[hi]; !ok || s != reviewstate.StatusNew {
+			return false
+		}
+	}
+	return len(f.Hunks) > 0
+}
+
+// fileNewCommentCount returns the number of new/edited inline comments on a file.
+func (d *DiffView) fileNewCommentCount(f *File) int {
+	count := 0
+	for _, c := range d.inline {
+		if c.Path == f.Name && (c.IsNew || c.IsEdited) {
+			count++
+		}
+	}
+	return count
 }
 
 func gutterWidth(hunks []*Hunk) int {
