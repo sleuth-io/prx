@@ -30,10 +30,10 @@
 |-----|--------|
 | `j` / `k` / `up` / `down` | Scroll |
 | `]` / `[` | Jump to next/previous file |
-| `}` / `{` | Jump to next/previous hunk |
-| `left` / `right` | Collapse/expand current file or comment |
-| `shift+left` / `<` | Collapse all items |
-| `shift+right` / `>` | Expand all items |
+| `}` / `{` | Jump to next/previous expanded hunk (skips collapsed) |
+| `left` / `right` | Collapse/expand current item (expanding a comment also expands its parent hunk) |
+| `shift+left` / `<` | Collapse one level (comments → groups → hunks → files) |
+| `shift+right` / `>` | Expand one level (files → hunks → groups → comments) |
 | `?` | Quote current line/hunk and return to chat |
 | `c` | Open comment modal on current line |
 | `q` / `esc` / `ctrl+q` | Return to conversation |
@@ -99,6 +99,33 @@ prx fetches recently merged PRs authored by others that you haven't reviewed. Th
 
 Post-merge PRs also appear in the bulk approve screen when they score below the approve threshold.
 
+## Incremental Review
+
+prx tracks what you've seen and highlights what's new on return visits.
+
+**How it works:**
+- When you exit the diff overlay, prx snapshots all hunk content hashes and comment IDs
+- On your next visit, if anything changed, the diff opens in **incremental mode**
+- Snapshots are also saved when you take review actions (approve, comment, request-changes)
+- State is persisted to `~/.cache/prx/review-state.json` (survives app restarts, 30-day eviction)
+
+**What you see in incremental mode:**
+- **New hunks** — expanded with green "(new)" badge
+- **Unchanged hunks** — collapsed (dim style)
+- **Hunks with new inline comments** — expanded for code context, comment has green "(new)" badge
+- **New top-level comments** — comment group auto-expanded, comment has green "(new)" badge
+- **Edited comments** — blue "(edited)" badge
+- **File-level badges** — files with new comments show "(N new comments)" on the header
+- **Scoring panel** — green "New" summary line (e.g. "2 new hunks, 3 new comments")
+
+**Rebase resilience:** Content-hash matching means rebases that don't change code are invisible. A pure rebase produces identical hashes, so everything shows as unchanged.
+
+**Reply threading:** Inline comment replies are indented with a ↳ prefix to distinguish them from root comments.
+
+**Navigation:** `{`/`}` skip collapsed hunks, creating a natural review queue of only new content. Use `>` to expand everything back to the full diff.
+
+**Post-merge PRs:** Reviewed merged PRs that receive new comments resurface in the PR list automatically.
+
 ## Assessment Panel
 
 Each PR's assessment panel shows:
@@ -106,6 +133,7 @@ Each PR's assessment panel shows:
 - Weighted verdict: APPROVE, REVIEW, or INVESTIGATE
 - Review notes — a plain-language summary of what to focus on
 - Key hunk preview — a snippet of the riskiest code change, with the file and line reference
+- "New" line — when incremental state shows changes since last review
 
 Inline images in PR descriptions are rendered as thumbnails in the terminal.
 

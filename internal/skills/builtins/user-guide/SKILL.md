@@ -26,7 +26,10 @@ prx is a conversation-first terminal UI for prioritizing code review. It uses AI
 `ctrl+n` next, `ctrl+p` previous. Or type `/next` and `/prev`.
 
 **How do I see the diff?**
-`ctrl+d` opens the diff overlay. `q` or `esc` returns to conversation.
+`ctrl+d` opens the diff overlay. `q` or `esc` returns to conversation. On return visits, the diff automatically shows only what's new — unchanged hunks are collapsed.
+
+**What is incremental review?**
+prx tracks what you've seen by snapshotting hunk and comment content hashes when you exit the diff. On your next visit (after a refresh or app restart), if anything changed, the diff opens in incremental mode: new hunks are expanded with a green "new" badge, unchanged hunks collapse, and new comments get a green badge. Edited comments get a blue "edited" badge. The scoring panel shows a green "New" summary line. Use `>` to expand everything back to the full diff, or `{`/`}` to jump between only the expanded (new) hunks.
 
 **How do I approve/merge/reject?**
 Type `/approve`, `/merge`, or `/reject`. Or just ask in chat: "approve this PR". All actions require confirmation.
