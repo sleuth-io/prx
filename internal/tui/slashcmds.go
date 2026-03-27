@@ -21,7 +21,7 @@ type Command struct {
 	Description string       // shown in help/autocomplete
 	KeyBinding  string       // optional ctrl combo (e.g. "ctrl+d"), empty = no binding
 	Scope       CommandScope // controls autocomplete visibility
-	Run         func(s *ConversationScene, m *Model) (Scene, tea.Cmd, bool)
+	Run         func(s *ConversationScene, m *Model, args string) (Scene, tea.Cmd, bool)
 }
 
 // commands returns all registered commands.
@@ -32,7 +32,7 @@ func commands() []Command {
 			Description: "Go to next PR",
 			KeyBinding:  "ctrl+n",
 			Scope:       ScopeGlobal,
-			Run: func(s *ConversationScene, m *Model) (Scene, tea.Cmd, bool) {
+			Run: func(s *ConversationScene, m *Model, args string) (Scene, tea.Cmd, bool) {
 				m.navigatePR(1, s)
 				return s, nil, true
 			},
@@ -42,7 +42,7 @@ func commands() []Command {
 			Description: "Go to previous PR",
 			KeyBinding:  "ctrl+p",
 			Scope:       ScopeGlobal,
-			Run: func(s *ConversationScene, m *Model) (Scene, tea.Cmd, bool) {
+			Run: func(s *ConversationScene, m *Model, args string) (Scene, tea.Cmd, bool) {
 				m.navigatePR(-1, s)
 				return s, nil, true
 			},
@@ -52,7 +52,7 @@ func commands() []Command {
 			Description: "Toggle diff overlay",
 			KeyBinding:  "ctrl+d",
 			Scope:       ScopePR,
-			Run: func(s *ConversationScene, m *Model) (Scene, tea.Cmd, bool) {
+			Run: func(s *ConversationScene, m *Model, args string) (Scene, tea.Cmd, bool) {
 				s.input.Blur()
 				m.diffView.Focused = true
 				ds := newDiffOverlayScene(s, m.width, m.height)
@@ -70,7 +70,7 @@ func commands() []Command {
 			Name:        "approve",
 			Description: "Approve current PR",
 			Scope:       ScopePR,
-			Run: func(s *ConversationScene, m *Model) (Scene, tea.Cmd, bool) {
+			Run: func(s *ConversationScene, m *Model, args string) (Scene, tea.Cmd, bool) {
 				card := m.currentCard()
 				if card == nil || card.Scoring || m.isOwnPR(card) {
 					return s, nil, true
@@ -96,7 +96,7 @@ func commands() []Command {
 			Name:        "flag",
 			Description: "Flag a merged PR (thumbs down)",
 			Scope:       ScopePR,
-			Run: func(s *ConversationScene, m *Model) (Scene, tea.Cmd, bool) {
+			Run: func(s *ConversationScene, m *Model, args string) (Scene, tea.Cmd, bool) {
 				card := m.currentCard()
 				if card == nil || !card.PostMerge {
 					return s, nil, true
@@ -115,7 +115,7 @@ func commands() []Command {
 			Description: "Toggle showing all merged PRs",
 			KeyBinding:  "ctrl+a",
 			Scope:       ScopeGlobal,
-			Run: func(s *ConversationScene, m *Model) (Scene, tea.Cmd, bool) {
+			Run: func(s *ConversationScene, m *Model, args string) (Scene, tea.Cmd, bool) {
 				m.showAllMerged = !m.showAllMerged
 				if m.showAllMerged {
 					s.actionStatus = "Showing all merged PRs"
@@ -136,7 +136,7 @@ func commands() []Command {
 			Name:        "merge",
 			Description: "Merge current PR",
 			Scope:       ScopePR,
-			Run: func(s *ConversationScene, m *Model) (Scene, tea.Cmd, bool) {
+			Run: func(s *ConversationScene, m *Model, args string) (Scene, tea.Cmd, bool) {
 				card := m.currentCard()
 				if card == nil || card.Scoring || !m.isOwnPR(card) {
 					return s, nil, true
@@ -164,7 +164,7 @@ func commands() []Command {
 			Name:        "reject",
 			Description: "Request changes on current PR",
 			Scope:       ScopePR,
-			Run: func(s *ConversationScene, m *Model) (Scene, tea.Cmd, bool) {
+			Run: func(s *ConversationScene, m *Model, args string) (Scene, tea.Cmd, bool) {
 				card := m.currentCard()
 				if card == nil || card.Scoring || card.Assessment == nil || m.isOwnPR(card) {
 					return s, nil, true
@@ -182,12 +182,18 @@ func commands() []Command {
 			Name:        "comment",
 			Description: "Post a comment on current PR",
 			Scope:       ScopePR,
-			Run: func(s *ConversationScene, m *Model) (Scene, tea.Cmd, bool) {
+			Run: func(s *ConversationScene, m *Model, args string) (Scene, tea.Cmd, bool) {
 				card := m.currentCard()
 				if card == nil {
 					return s, nil, true
 				}
-				// Enter diff overlay with comment modal open
+				// If args provided, post the comment directly
+				if args != "" {
+					repo, num := card.Ctx.Repo, card.PR.Number
+					s.actionStatus = "Posting comment…"
+					return s, postGlobalCommentCmd(repo, num, args, nil), true
+				}
+				// No args — enter diff overlay with comment modal open
 				s.input.Blur()
 				m.diffView.Focused = true
 				ds := newDiffOverlayScene(s, m.width, m.height)
@@ -200,7 +206,7 @@ func commands() []Command {
 			Description: "Open bulk approve view",
 			KeyBinding:  "ctrl+b",
 			Scope:       ScopeGlobal,
-			Run: func(s *ConversationScene, m *Model) (Scene, tea.Cmd, bool) {
+			Run: func(s *ConversationScene, m *Model, args string) (Scene, tea.Cmd, bool) {
 				m.tryEnterBulkApprove()
 				return m.scene, nil, true
 			},
@@ -210,7 +216,7 @@ func commands() []Command {
 			Description: "Refresh current PR and check for new PRs",
 			KeyBinding:  "ctrl+r",
 			Scope:       ScopeGlobal,
-			Run: func(s *ConversationScene, m *Model) (Scene, tea.Cmd, bool) {
+			Run: func(s *ConversationScene, m *Model, args string) (Scene, tea.Cmd, bool) {
 				card := m.currentCard()
 				if card == nil {
 					return s, nil, true
@@ -229,7 +235,7 @@ func commands() []Command {
 			Description: "Quit prx",
 			KeyBinding:  "ctrl+q",
 			Scope:       ScopeGlobal,
-			Run: func(s *ConversationScene, m *Model) (Scene, tea.Cmd, bool) {
+			Run: func(s *ConversationScene, m *Model, args string) (Scene, tea.Cmd, bool) {
 				return s, m.cleanupWorktrees(), true
 			},
 		},
@@ -237,7 +243,7 @@ func commands() []Command {
 			Name:        "exit",
 			Description: "Quit prx",
 			Scope:       ScopeGlobal,
-			Run: func(s *ConversationScene, m *Model) (Scene, tea.Cmd, bool) {
+			Run: func(s *ConversationScene, m *Model, args string) (Scene, tea.Cmd, bool) {
 				return s, m.cleanupWorktrees(), true
 			},
 		},

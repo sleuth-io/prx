@@ -144,12 +144,15 @@ func (s *ConversationScene) handleSlashCommand(m *Model) (Scene, tea.Cmd, bool) 
 	if !strings.HasPrefix(input, "/") {
 		return s, nil, false
 	}
-	name := strings.ToLower(strings.TrimPrefix(input, "/"))
+	raw := strings.TrimPrefix(input, "/")
+	name, args, _ := strings.Cut(raw, " ")
+	name = strings.ToLower(name)
+	args = strings.TrimSpace(args)
 	slashCmds, _ := commandMap()
 	if cmd, ok := slashCmds[name]; ok {
 		logger.Info("[user] slash command: /%s", name)
 		s.input.Reset()
-		return cmd.Run(s, m)
+		return cmd.Run(s, m, args)
 	}
 
 	// Check if it matches a skill name — send as a chat message asking to activate the skill.
@@ -168,7 +171,7 @@ func (s *ConversationScene) handleCommandKey(key string, m *Model) (Scene, tea.C
 	_, keyCmds := commandMap()
 	if cmd, ok := keyCmds[key]; ok {
 		logger.Info("[user] key command: %s → %s", key, cmd.Name)
-		return cmd.Run(s, m)
+		return cmd.Run(s, m, "")
 	}
 	return s, nil, false
 }

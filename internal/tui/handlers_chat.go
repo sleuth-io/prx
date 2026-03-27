@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -104,10 +105,22 @@ func (m *Model) handleCommentSubmitted(msg commentSubmittedMsg) (Model, tea.Cmd)
 		}
 	}
 	if card := m.currentCard(); card != nil && card.Ctx.Repo == msg.repo && card.PR.Number == msg.prNumber {
-		if msg.err == nil {
-			m.diffView.ConfirmComment(msg.pendingItem)
-		} else {
-			m.diffView.RemoveComment(msg.pendingItem)
+		if msg.pendingItem != nil {
+			if msg.err == nil {
+				m.diffView.ConfirmComment(msg.pendingItem)
+			} else {
+				m.diffView.RemoveComment(msg.pendingItem)
+			}
+		}
+		// Update action status for slash-command comments (no pending item).
+		if cs, ok := m.scene.(*ConversationScene); ok && msg.pendingItem == nil {
+			cs.actionDone = true
+			if msg.err != nil {
+				cs.actionStatus = fmt.Sprintf("Comment failed: %s", msg.err)
+			} else {
+				cs.actionStatus = fmt.Sprintf("Comment posted on PR #%d", msg.prNumber)
+			}
+			cs.BuildScrollback(m)
 		}
 	}
 	return *m, nil
