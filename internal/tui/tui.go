@@ -62,10 +62,10 @@ type Model struct {
 	noPRs       bool // true when no open PRs found — any key exits
 
 	// Post-merge review
-	showAllMerged   bool // when true, show all merged PRs including already-reviewed/reacted
-	openListsDone    int // count of repos whose open PR list fetch has returned
-	mergedListsDone  int // count of repos whose merged PR list fetch has returned
-	trackedListsDone int // count of repos whose tracked PR list fetch has returned
+	showAllMerged    bool // when true, show all merged PRs including already-reviewed/reacted
+	openListsDone    int  // count of repos whose open PR list fetch has returned
+	mergedListsDone  int  // count of repos whose merged PR list fetch has returned
+	trackedListsDone int  // count of repos whose tracked PR list fetch has returned
 
 	// Incremental review
 	reviewStore *reviewstate.Store
