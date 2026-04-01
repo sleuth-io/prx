@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/sleuth-io/prx/internal/cache"
 	"github.com/sleuth-io/prx/internal/config"
 	"github.com/sleuth-io/prx/internal/github"
 )
@@ -51,6 +52,14 @@ var toolDefs = []map[string]interface{}{
 				},
 			},
 			"required": []string{"body"},
+		},
+	},
+	{
+		"name":        "skip_pr",
+		"description": "Skip the pull request — hides it from the review queue until un-skipped",
+		"inputSchema": map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{},
 		},
 	},
 	{
@@ -232,6 +241,8 @@ func (s *Server) toolDescription(name string, args map[string]interface{}) strin
 			return fmt.Sprintf("Post inline comment on PR #%d at %s:%d: %s", s.prNumber, path, int(line), truncate(body, 100))
 		}
 		return fmt.Sprintf("Post comment on PR #%d: %s", s.prNumber, truncate(body, 100))
+	case "skip_pr":
+		return fmt.Sprintf("Skip PR #%d", s.prNumber)
 	case "merge_pr":
 		return fmt.Sprintf("Merge PR #%d", s.prNumber)
 	case "set_model":
@@ -288,6 +299,11 @@ func (s *Server) executeAction(name string, args map[string]interface{}) (string
 			return "", err
 		}
 		return "Comment posted successfully", nil
+	case "skip_pr":
+		store := cache.LoadSkipStore()
+		store.Skip(cache.SkipKey(s.repo, s.prNumber))
+		s.notifySkip()
+		return "PR skipped successfully", nil
 	case "merge_pr":
 		cfg, err := config.Load()
 		if err != nil {

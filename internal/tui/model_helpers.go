@@ -12,6 +12,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/sleuth-io/prx/internal/ai"
+	"github.com/sleuth-io/prx/internal/cache"
+	"github.com/sleuth-io/prx/internal/github"
 	"github.com/sleuth-io/prx/internal/logger"
 	"github.com/sleuth-io/prx/internal/mcp"
 	"github.com/sleuth-io/prx/internal/reviewstate"
@@ -41,7 +43,7 @@ func (m Model) currentCard() *PRCard {
 // tryStartupTransition checks if we can exit the startup screen.
 // Called when a merged PR status arrives and no scoring was triggered.
 func (m *Model) tryStartupTransition() {
-	if m.startupDone || m.fetching > 0 {
+	if m.startupDone || m.fetching > 0 || m.parsing > 0 {
 		return
 	}
 	// Check if any visible card exists (scored or not — unscored merged PRs are still viewable).
@@ -77,7 +79,7 @@ func (m *Model) tryStartupTransition() {
 
 // checkNoPRs sets noPRs=true only when all repo lists have returned and there are no cards or fetches pending.
 func (m *Model) checkNoPRs() {
-	if m.openListsDone < len(m.app.Repos) || m.mergedListsDone < len(m.app.Repos) {
+	if m.openListsDone < len(m.app.Repos) || m.mergedListsDone < len(m.app.Repos) || m.trackedListsDone < len(m.app.Repos) {
 		return
 	}
 	if len(m.cards) == 0 && m.fetching == 0 {
@@ -88,19 +90,72 @@ func (m *Model) checkNoPRs() {
 }
 
 // isCardVisible returns whether a card should be shown in the current view.
-// Open PRs are always visible. Post-merge PRs are hidden when already reviewed/reacted
-// unless showAllMerged is toggled on.
+// Open PRs are hidden when the user has reviewed (approved or requested changes)
+// and nothing has changed since, or when skipped. Post-merge PRs are hidden when
+// already reviewed/reacted. Ctrl+a (showAllMerged) reveals all hidden cards.
 func (m Model) isCardVisible(card *PRCard) bool {
-	if !card.PostMerge {
-		return true
-	}
 	if m.showAllMerged {
 		return true
+	}
+	// Skipped PRs are always hidden (unless show-all is on).
+	key := cache.SkipKey(card.Ctx.Repo, card.PR.Number)
+	if m.app.SkipStore.IsSkipped(key) {
+		return false
+	}
+	if !card.PostMerge {
+		if card.HasNewContent || m.isOwnPR(card) {
+			return true
+		}
+		return !m.userHasReviewedPR(card)
 	}
 	if card.HasNewContent {
 		return true // new comments since last review — keep visible
 	}
 	return !card.UserHasReviewed && !card.UserHasReacted
+}
+
+// userHasReviewedPR checks if the current user's latest review on an open PR
+// is APPROVED or CHANGES_REQUESTED.
+func (m Model) userHasReviewedPR(card *PRCard) bool {
+	if card.PR == nil {
+		return false
+	}
+	// Walk reviews in reverse to find the current user's latest review.
+	for i := len(card.PR.Reviews) - 1; i >= 0; i-- {
+		r := card.PR.Reviews[i]
+		if r.Author == m.app.CurrentUser {
+			return r.State == "APPROVED" || r.State == "CHANGES_REQUESTED"
+		}
+	}
+	return false
+}
+
+// addLocalReview appends a review to the local PR data so visibility checks
+// reflect the user's action without waiting for a refresh from GitHub.
+func (m *Model) addLocalReview(repo string, prNumber int, state string) {
+	if card := m.findCard(repo, prNumber); card != nil && card.PR != nil {
+		card.PR.Reviews = append(card.PR.Reviews, github.ReviewComment{
+			Author: m.app.CurrentUser,
+			State:  state,
+		})
+		// Card may now be hidden — advance to next visible card.
+		if !m.isCardVisible(card) {
+			m.skipToVisibleCard()
+			m.loadCurrentDiff()
+		}
+	}
+}
+
+// visiblePosition returns the 1-based index of the current card among visible cards,
+// and the total number of visible cards.
+func (m Model) visiblePosition() (int, int) {
+	visIdx := 0
+	for i := 0; i < m.current && i < len(m.cards); i++ {
+		if m.isCardVisible(m.cards[i]) {
+			visIdx++
+		}
+	}
+	return visIdx + 1, m.visibleCardCount()
 }
 
 // visibleCardCount returns the number of currently visible cards.
@@ -132,6 +187,13 @@ func (m *Model) navigatePR(delta int, s *ConversationScene) {
 		next += delta
 	}
 	if next < 0 || next >= len(m.cards) {
+		if delta > 0 {
+			s.actionStatus = "No more PRs"
+		} else {
+			s.actionStatus = "Already at first PR"
+		}
+		s.actionDone = true
+		s.BuildScrollback(m)
 		return
 	}
 	m.current = next
@@ -160,6 +222,26 @@ func (m *Model) loadCurrentDiff() {
 	}
 }
 
+// computeHasNewContent sets HasNewContent on a card by comparing current state
+// against the review state store. Does not update the DiffView.
+func (m *Model) computeHasNewContent(card *PRCard) {
+	if m.reviewStore == nil || card.parsedFiles == nil {
+		card.HasNewContent = false
+		return
+	}
+	key := reviewstate.Key(card.Ctx.Repo, card.PR.Number)
+	state := m.reviewStore.Get(key)
+	if state == nil {
+		card.HasNewContent = false
+		return
+	}
+	card.ReviewState = state
+	fileNames, fileHunks := diff.FileHunkInfo(card.parsedFiles)
+	commentDigests := diff.CommentDigestsFromPR(card.PR, m.app.CurrentUser)
+	inc := reviewstate.ComputeIncremental(fileNames, fileHunks, commentDigests, state)
+	card.HasNewContent = inc.HasChanges || inc.HasNewComments
+}
+
 // updateIncrementalState computes incremental review state and stores it on the
 // DiffView (quietly, without triggering a rebuild). The stored state is applied
 // automatically by rebuildViewport() via applyIncrementalFlags().
@@ -177,7 +259,7 @@ func (m *Model) updateIncrementalState(card *PRCard) {
 		return
 	}
 	fileNames, fileHunks := diff.FileHunkInfo(card.parsedFiles)
-	commentDigests := diff.CommentDigestsFromPR(card.PR)
+	commentDigests := diff.CommentDigestsFromPR(card.PR, m.app.CurrentUser)
 	state := reviewstate.ComputeIncremental(fileNames, fileHunks, commentDigests, card.ReviewState)
 	card.HasNewContent = state.HasChanges || state.HasNewComments
 	logger.Info("incremental state for PR #%d: %d new hunks, %d new comments, %d edited, mode=%v",
@@ -193,7 +275,7 @@ func (m *Model) snapshotCurrentPR() {
 		return
 	}
 	hunkDigests := diff.DigestsFromFiles(card.parsedFiles)
-	commentDigests := diff.CommentDigestsFromPR(card.PR)
+	commentDigests := diff.CommentDigestsFromPR(card.PR, m.app.CurrentUser)
 	key := reviewstate.Key(card.Ctx.Repo, card.PR.Number)
 
 	// Don't re-snapshot if nothing changed — prevents bouncing between
@@ -368,7 +450,7 @@ func (m *Model) hardReset() tea.Cmd {
 	m.startupLog = log
 	cmds = append(cmds, m.spinner.Tick)
 	for _, r := range m.app.Repos {
-		cmds = append(cmds, fetchPRListCmd(r), fetchMergedPRListCmd(r))
+		cmds = append(cmds, fetchPRListCmd(r), fetchMergedPRListCmd(r), fetchTrackedPRListCmd(r, m.reviewStore, nil))
 	}
 	return tea.Batch(cmds...)
 }

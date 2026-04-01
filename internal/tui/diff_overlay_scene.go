@@ -49,6 +49,9 @@ func (s *DiffOverlayScene) View(m *Model) string {
 
 	if s.modal.active {
 		title := "  Add comment  (Enter submit · Alt+Enter newline · Esc cancel)"
+		if s.modal.requestChanges {
+			title = "  Request changes  (Enter submit · Alt+Enter newline · Esc cancel)"
+		}
 		if s.modal.isInline {
 			title = fmt.Sprintf("  Comment on %s:%d  (Enter submit · Alt+Enter newline · Esc cancel)", s.modal.filePath, s.modal.fileLine)
 		}
@@ -81,6 +84,18 @@ func (s *DiffOverlayScene) handleKey(msg tea.KeyMsg, m *Model) (Scene, tea.Cmd) 
 	switch msg.String() {
 	case "ctrl+q":
 		return s, m.cleanupWorktrees()
+	case "ctrl+n":
+		m.diffView.Focused = false
+		m.navigatePR(1, s.conv)
+		m.diffView.Focused = true
+		s.conv.BuildScrollback(m)
+		return s, nil
+	case "ctrl+p":
+		m.diffView.Focused = false
+		m.navigatePR(-1, s.conv)
+		m.diffView.Focused = true
+		s.conv.BuildScrollback(m)
+		return s, nil
 	case "q", "esc", "ctrl+d":
 		logger.Info("[user] diff overlay: exit (%s)", msg.String())
 		// Snapshot review state on diff exit
@@ -153,6 +168,7 @@ func (s *DiffOverlayScene) handleModalKey(msg tea.KeyMsg, m *Model) (Scene, tea.
 			return s, nil
 		}
 		isInline := s.modal.isInline
+		requestChanges := s.modal.requestChanges
 		filePath := s.modal.filePath
 		fileLine := s.modal.fileLine
 		commitSHA := s.modal.commitSHA
@@ -163,6 +179,9 @@ func (s *DiffOverlayScene) handleModalKey(msg tea.KeyMsg, m *Model) (Scene, tea.
 			Line:   fileLine,
 		})
 		s.modal = commentModal{}
+		if requestChanges {
+			return s, requestChangesCmd(card.Ctx.Repo, card.PR.Number, body)
+		}
 		if isInline {
 			return s, postInlineCommentCmd(card.Ctx.Repo, card.PR.Number, commitSHA, filePath, fileLine, body, pendingItem)
 		}
@@ -174,18 +193,19 @@ func (s *DiffOverlayScene) handleModalKey(msg tea.KeyMsg, m *Model) (Scene, tea.
 	}
 }
 
-func (s *DiffOverlayScene) openCommentModal(card *PRCard, isInline bool, path string, line int) {
+func (s *DiffOverlayScene) openCommentModal(card *PRCard, isInline bool, path string, line int, requestChanges ...bool) {
 	ta := textarea.New()
 	ta.Placeholder = "Write your comment..."
 	ta.SetWidth(s.width - 4)
 	ta.SetHeight(4)
 	s.modal = commentModal{
-		active:    true,
-		isInline:  isInline,
-		filePath:  path,
-		fileLine:  line,
-		commitSHA: card.PR.HeadSHA,
-		textarea:  ta,
+		active:         true,
+		isInline:       isInline,
+		requestChanges: len(requestChanges) > 0 && requestChanges[0],
+		filePath:       path,
+		fileLine:       line,
+		commitSHA:      card.PR.HeadSHA,
+		textarea:       ta,
 	}
 }
 
@@ -198,7 +218,8 @@ func (s *DiffOverlayScene) renderFooter(m *Model) string {
 	if width == 0 {
 		width = 80
 	}
-	status := fmt.Sprintf("prx  PR %d/%d", m.current+1, len(m.cards))
+	visIdx, visible := m.visiblePosition()
+	status := fmt.Sprintf("prx  PR %d/%d", visIdx, visible)
 	hints := "j/k scroll  [/] file  {/} hunk  ←/→ collapse  </> all  ? ask  c comment  q back"
 	gap := width - lipgloss.Width(status) - lipgloss.Width(hints) - 2
 	if gap < 1 {

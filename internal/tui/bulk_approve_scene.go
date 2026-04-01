@@ -45,7 +45,7 @@ func (s *BulkApproveScene) Update(msg tea.Msg, m *Model) (Scene, tea.Cmd) {
 		if msg.String() == "ctrl+r" {
 			var cmds []tea.Cmd
 			for _, r := range m.app.Repos {
-				cmds = append(cmds, fetchPRListCmd(r), fetchMergedPRListCmd(r))
+				cmds = append(cmds, fetchPRListCmd(r), fetchMergedPRListCmd(r), fetchTrackedPRListCmd(r, m.reviewStore, nil))
 			}
 			return s, tea.Batch(cmds...)
 		}

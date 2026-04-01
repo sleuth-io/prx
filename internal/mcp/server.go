@@ -151,6 +151,23 @@ func (s *Server) notifyConfigReload() {
 	})
 }
 
+// notifySkip signals the TUI to reload its skip store and update visibility.
+func (s *Server) notifySkip() {
+	if s.socketPath == "" {
+		return
+	}
+	conn, err := net.Dial("unix", s.socketPath)
+	if err != nil {
+		logger.Error("mcp: notify skip: %v", err)
+		return
+	}
+	defer func() { _ = conn.Close() }()
+	_ = json.NewEncoder(conn).Encode(map[string]interface{}{
+		"type":      "skip",
+		"pr_number": s.prNumber,
+	})
+}
+
 // notifyRefresh signals the TUI to re-fetch this PR's data.
 func (s *Server) notifyRefresh() {
 	if s.socketPath == "" {

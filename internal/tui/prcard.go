@@ -37,10 +37,11 @@ type PRCard struct {
 }
 
 type commentModal struct {
-	active    bool
-	isInline  bool
-	filePath  string
-	fileLine  int
-	commitSHA string
-	textarea  textarea.Model
+	active         bool
+	isInline       bool
+	requestChanges bool
+	filePath       string
+	fileLine       int
+	commitSHA      string
+	textarea       textarea.Model
 }
