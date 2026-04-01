@@ -122,6 +122,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case perm.RefreshMsg:
 		return m.handlePermRefresh(msg)
+	case perm.SkipMsg:
+		return m.handleSkip(msg)
 	case perm.ConfigReloadMsg:
 		return m.handleConfigReload(msg)
 	case tea.KeyMsg:

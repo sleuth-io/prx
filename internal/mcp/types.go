@@ -34,6 +34,7 @@ var toolMetas = map[string]toolMeta{
 	"approve_pr":          {requiresPermission: true, isMutation: true},
 	"request_changes":     {requiresPermission: true, isMutation: true},
 	"comment_on_pr":       {requiresPermission: true, isMutation: true},
+	"skip_pr":             {requiresPermission: false, isMutation: false},
 	"merge_pr":            {requiresPermission: true, isMutation: true},
 	"get_config":          {requiresPermission: false, isMutation: false},
 	"set_model":           {requiresPermission: true, isMutation: false},

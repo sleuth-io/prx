@@ -25,6 +25,7 @@ type App struct {
 	CurrentUser string
 	Config      config.Config
 	Cache       *cache.Cache
+	SkipStore   *cache.SkipStore
 	Skills      []skills.Skill
 }
 
@@ -100,6 +101,7 @@ func New(repoDirs []string) (*App, error) {
 		CurrentUser: user,
 		Config:      cfg,
 		Cache:       cache.Load(),
+		SkipStore:   cache.LoadSkipStore(),
 		Skills:      discovered,
 	}
 

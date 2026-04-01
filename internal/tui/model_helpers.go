@@ -12,6 +12,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/sleuth-io/prx/internal/ai"
+	"github.com/sleuth-io/prx/internal/cache"
+	"github.com/sleuth-io/prx/internal/github"
 	"github.com/sleuth-io/prx/internal/logger"
 	"github.com/sleuth-io/prx/internal/mcp"
 	"github.com/sleuth-io/prx/internal/reviewstate"
@@ -88,19 +90,60 @@ func (m *Model) checkNoPRs() {
 }
 
 // isCardVisible returns whether a card should be shown in the current view.
-// Open PRs are always visible. Post-merge PRs are hidden when already reviewed/reacted
-// unless showAllMerged is toggled on.
+// Open PRs are hidden when the user has reviewed (approved or requested changes)
+// and nothing has changed since, or when skipped. Post-merge PRs are hidden when
+// already reviewed/reacted. Ctrl+a (showAllMerged) reveals all hidden cards.
 func (m Model) isCardVisible(card *PRCard) bool {
-	if !card.PostMerge {
-		return true
-	}
 	if m.showAllMerged {
 		return true
+	}
+	// Skipped PRs are always hidden (unless show-all is on).
+	key := cache.SkipKey(card.Ctx.Repo, card.PR.Number)
+	if m.app.SkipStore.IsSkipped(key) {
+		return false
+	}
+	if !card.PostMerge {
+		if card.HasNewContent || m.isOwnPR(card) {
+			return true
+		}
+		return !m.userHasReviewedPR(card)
 	}
 	if card.HasNewContent {
 		return true // new comments since last review — keep visible
 	}
 	return !card.UserHasReviewed && !card.UserHasReacted
+}
+
+// userHasReviewedPR checks if the current user's latest review on an open PR
+// is APPROVED or CHANGES_REQUESTED.
+func (m Model) userHasReviewedPR(card *PRCard) bool {
+	if card.PR == nil {
+		return false
+	}
+	// Walk reviews in reverse to find the current user's latest review.
+	for i := len(card.PR.Reviews) - 1; i >= 0; i-- {
+		r := card.PR.Reviews[i]
+		if r.Author == m.app.CurrentUser {
+			return r.State == "APPROVED" || r.State == "CHANGES_REQUESTED"
+		}
+	}
+	return false
+}
+
+// addLocalReview appends a review to the local PR data so visibility checks
+// reflect the user's action without waiting for a refresh from GitHub.
+func (m *Model) addLocalReview(repo string, prNumber int, state string) {
+	if card := m.findCard(repo, prNumber); card != nil && card.PR != nil {
+		card.PR.Reviews = append(card.PR.Reviews, github.ReviewComment{
+			Author: m.app.CurrentUser,
+			State:  state,
+		})
+		// Card may now be hidden — advance to next visible card.
+		if !m.isCardVisible(card) {
+			m.skipToVisibleCard()
+			m.loadCurrentDiff()
+		}
+	}
 }
 
 // visibleCardCount returns the number of currently visible cards.

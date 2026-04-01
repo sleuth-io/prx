@@ -33,6 +33,11 @@ type RefreshMsg struct {
 	PRNumber int
 }
 
+// SkipMsg is sent to the TUI when a PR has been skipped via MCP.
+type SkipMsg struct {
+	PRNumber int
+}
+
 // ConfigReloadMsg is sent to the TUI when config has been updated on disk
 // and the in-memory state should be refreshed.
 type ConfigReloadMsg struct{}
@@ -91,6 +96,8 @@ func handleConn(conn net.Conn, program *tea.Program) {
 		}
 	case "refresh":
 		program.Send(RefreshMsg{PRNumber: req.PRNumber})
+	case "skip":
+		program.Send(SkipMsg{PRNumber: req.PRNumber})
 	case "config_reload":
 		program.Send(ConfigReloadMsg{})
 	default:

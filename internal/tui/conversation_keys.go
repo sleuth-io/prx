@@ -227,8 +227,10 @@ func (s *ConversationScene) handleActionDone(msg actionDoneMsg, m *Model) (Scene
 		}
 	case actionApprove:
 		s.actionStatus = fmt.Sprintf("Approved PR #%d", msg.pr)
+		m.addLocalReview(msg.repo, msg.pr, "APPROVED")
 	case actionRequestChanges:
 		s.actionStatus = fmt.Sprintf("Requested changes on PR #%d", msg.pr)
+		m.addLocalReview(msg.repo, msg.pr, "CHANGES_REQUESTED")
 	case actionPostMergeApprove:
 		s.actionStatus = fmt.Sprintf("Approved post-merge PR #%d \U0001f44d", msg.pr)
 		m.markPostMergeReacted(msg.repo, msg.pr, "+1")

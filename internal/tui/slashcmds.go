@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/sleuth-io/prx/internal/cache"
 )
 
 // CommandScope defines when a command is available.
@@ -166,16 +167,10 @@ func commands() []Command {
 			Scope:       ScopePR,
 			Run: func(s *ConversationScene, m *Model, args string) (Scene, tea.Cmd, bool) {
 				card := m.currentCard()
-				if card == nil || card.Scoring || card.Assessment == nil || m.isOwnPR(card) {
+				if card == nil || card.Scoring || m.isOwnPR(card) {
 					return s, nil, true
 				}
-				repo, num, notes := card.Ctx.Repo, card.PR.Number, card.Assessment.ReviewNotes
-				s.confirm = &confirmDialog{
-					description:  fmt.Sprintf("Request changes on PR #%d?", num),
-					actionStatus: "Requesting changes…",
-					cmd:          requestChangesCmd(repo, num, notes),
-				}
-				return s, nil, true
+				return runCommentOrReject(s, m, card, args, true)
 			},
 		},
 		{
@@ -187,18 +182,43 @@ func commands() []Command {
 				if card == nil {
 					return s, nil, true
 				}
-				// If args provided, post the comment directly
-				if args != "" {
-					repo, num := card.Ctx.Repo, card.PR.Number
-					s.actionStatus = "Posting comment…"
-					return s, postGlobalCommentCmd(repo, num, args, nil), true
+				return runCommentOrReject(s, m, card, args, false)
+			},
+		},
+		{
+			Name:        "skip",
+			Description: "Skip current PR (hide until un-skipped)",
+			Scope:       ScopePR,
+			Run: func(s *ConversationScene, m *Model, args string) (Scene, tea.Cmd, bool) {
+				card := m.currentCard()
+				if card == nil {
+					return s, nil, true
 				}
-				// No args — enter diff overlay with comment modal open
-				s.input.Blur()
-				m.diffView.Focused = true
-				ds := newDiffOverlayScene(s, m.width, m.height)
-				ds.openCommentModal(card, false, "", 0)
-				return ds, ds.modal.textarea.Focus(), true
+				key := cache.SkipKey(card.Ctx.Repo, card.PR.Number)
+				m.app.SkipStore.Skip(key)
+				s.actionStatus = fmt.Sprintf("Skipped PR #%d", card.PR.Number)
+				s.actionDone = true
+				m.skipToVisibleCard()
+				m.loadCurrentDiff()
+				s.BuildScrollback(m)
+				return m.scene, nil, true
+			},
+		},
+		{
+			Name:        "unskip",
+			Description: "Un-skip current PR",
+			Scope:       ScopePR,
+			Run: func(s *ConversationScene, m *Model, args string) (Scene, tea.Cmd, bool) {
+				card := m.currentCard()
+				if card == nil {
+					return s, nil, true
+				}
+				key := cache.SkipKey(card.Ctx.Repo, card.PR.Number)
+				m.app.SkipStore.Unskip(key)
+				s.actionStatus = fmt.Sprintf("Un-skipped PR #%d", card.PR.Number)
+				s.actionDone = true
+				s.BuildScrollback(m)
+				return s, nil, true
 			},
 		},
 		{
@@ -265,11 +285,31 @@ func commandMap() (slashMap map[string]*Command, keyMap map[string]*Command) {
 	return
 }
 
+// runCommentOrReject handles the shared logic for /comment and /reject.
+// With args: posts immediately. Without args: opens the diff overlay comment modal.
+func runCommentOrReject(s *ConversationScene, m *Model, card *PRCard, args string, requestChanges bool) (Scene, tea.Cmd, bool) {
+	repo, num := card.Ctx.Repo, card.PR.Number
+	if args != "" {
+		if requestChanges {
+			s.actionStatus = "Requesting changes…"
+			return s, requestChangesCmd(repo, num, args), true
+		}
+		s.actionStatus = "Posting comment…"
+		return s, postGlobalCommentCmd(repo, num, args, nil), true
+	}
+	// No args — enter diff overlay with comment modal open
+	s.input.Blur()
+	m.diffView.Focused = true
+	ds := newDiffOverlayScene(s, m.width, m.height)
+	ds.openCommentModal(card, false, "", 0, requestChanges)
+	return ds, ds.modal.textarea.Focus(), true
+}
+
 // ActionToolNames returns the MCP-prefixed action tool names filtered by ownership.
 // This replaces the hardcoded tool lists in sendChatCmd.
 func ActionToolNames(isOwnPR bool) []string {
 	if isOwnPR {
-		return []string{"mcp__prx__comment_on_pr", "mcp__prx__merge_pr"}
+		return []string{"mcp__prx__comment_on_pr", "mcp__prx__merge_pr", "mcp__prx__skip_pr"}
 	}
-	return []string{"mcp__prx__comment_on_pr", "mcp__prx__approve_pr", "mcp__prx__request_changes"}
+	return []string{"mcp__prx__comment_on_pr", "mcp__prx__approve_pr", "mcp__prx__request_changes", "mcp__prx__skip_pr"}
 }

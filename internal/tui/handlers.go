@@ -142,6 +142,17 @@ func (m *Model) handlePermRefresh(msg perm.RefreshMsg) (Model, tea.Cmd) {
 	return *m, nil
 }
 
+func (m *Model) handleSkip(msg perm.SkipMsg) (Model, tea.Cmd) {
+	// Reload skip store from disk (MCP server wrote it).
+	m.app.SkipStore = cache.LoadSkipStore()
+	if card := m.currentCard(); card != nil && !m.isCardVisible(card) {
+		m.skipToVisibleCard()
+		m.loadCurrentDiff()
+	}
+	m.buildScrollback()
+	return *m, nil
+}
+
 func (m *Model) handleConfigReload(_ perm.ConfigReloadMsg) (Model, tea.Cmd) {
 	var cmds []tea.Cmd
 	oldHash := config.CriteriaHash(m.app.Config.Criteria)
