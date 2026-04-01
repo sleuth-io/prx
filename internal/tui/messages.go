@@ -144,6 +144,12 @@ type mergedPRListFetchedMsg struct {
 	err    error
 }
 
+type trackedPRListFetchedMsg struct {
+	ctx    *app.RepoContext
+	rawPRs []map[string]any
+	err    error
+}
+
 type mergedPRStatusMsg struct {
 	repo        string
 	prNumber    int

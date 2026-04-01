@@ -20,6 +20,7 @@ import (
 	"github.com/sleuth-io/prx/internal/imgrender"
 	"github.com/sleuth-io/prx/internal/logger"
 	"github.com/sleuth-io/prx/internal/mcp"
+	"github.com/sleuth-io/prx/internal/reviewstate"
 	"github.com/sleuth-io/prx/internal/tui/chat"
 	"github.com/sleuth-io/prx/internal/tui/diff"
 )
@@ -160,6 +161,40 @@ func fetchMergedPRListCmd(ctx *app.RepoContext) tea.Cmd {
 		since := time.Now().AddDate(0, 0, -7)
 		rawPRs, err := github.ListMergedPRsMeta(ctx.Repo, ctx.App.CurrentUser, since)
 		return mergedPRListFetchedMsg{ctx: ctx, rawPRs: rawPRs, err: err}
+	}
+}
+
+// fetchTrackedPRListCmd fetches metadata for PRs we've previously interacted with
+// (from the review state store) that aren't already in the card set.
+func fetchTrackedPRListCmd(ctx *app.RepoContext, store *reviewstate.Store, existingNums map[int]bool) tea.Cmd {
+	// Collect PR numbers from the store for this repo that we don't already have.
+	var toFetch []int
+	prefix := ctx.Repo + "#"
+	for _, key := range store.Keys() {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		numStr := key[len(prefix):]
+		num, err := strconv.Atoi(numStr)
+		if err != nil {
+			continue
+		}
+		if existingNums[num] {
+			continue
+		}
+		toFetch = append(toFetch, num)
+	}
+	return func() tea.Msg {
+		var rawPRs []map[string]any
+		for _, num := range toFetch {
+			raw, err := github.FetchPRMeta(ctx.Repo, num)
+			if err != nil {
+				logger.Info("tracked PR #%d fetch failed: %v", num, err)
+				continue
+			}
+			rawPRs = append(rawPRs, raw)
+		}
+		return trackedPRListFetchedMsg{ctx: ctx, rawPRs: rawPRs}
 	}
 }
 

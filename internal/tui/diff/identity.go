@@ -33,10 +33,16 @@ func CommentBodyHash(body string) string {
 }
 
 // CommentDigestsFromPR produces comment digests from a PR's inline and top-level comments.
-func CommentDigestsFromPR(pr *github.PR) []reviewstate.CommentDigest {
+// If excludeUser is provided, comments by that user are excluded — this prevents
+// the current user's own comments from being tracked or flagged as new.
+func CommentDigestsFromPR(pr *github.PR, excludeUser ...string) []reviewstate.CommentDigest {
+	exclude := ""
+	if len(excludeUser) > 0 {
+		exclude = excludeUser[0]
+	}
 	var digests []reviewstate.CommentDigest
 	for _, c := range pr.InlineComments {
-		if c.ID != 0 {
+		if c.ID != 0 && c.Author != exclude {
 			digests = append(digests, reviewstate.CommentDigest{
 				ID:   c.ID,
 				Hash: CommentBodyHash(c.Body),
@@ -44,7 +50,7 @@ func CommentDigestsFromPR(pr *github.PR) []reviewstate.CommentDigest {
 		}
 	}
 	for _, c := range pr.Comments {
-		if c.ID != 0 {
+		if c.ID != 0 && c.Author != exclude {
 			digests = append(digests, reviewstate.CommentDigest{
 				ID:   c.ID,
 				Hash: CommentBodyHash(c.Body),

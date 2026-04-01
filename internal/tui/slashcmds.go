@@ -245,7 +245,7 @@ func commands() []Command {
 				s.actionDone = false
 				cmds := []tea.Cmd{refreshPRCmd(card.PR, card.Ctx)}
 				for _, r := range m.app.Repos {
-					cmds = append(cmds, fetchPRListCmd(r), fetchMergedPRListCmd(r))
+					cmds = append(cmds, fetchPRListCmd(r), fetchMergedPRListCmd(r), fetchTrackedPRListCmd(r, m.reviewStore, nil))
 				}
 				return s, tea.Batch(cmds...), true
 			},

@@ -30,6 +30,7 @@ type Model struct {
 	cards          []*PRCard
 	total          int
 	fetching       int // PRs whose details are still being fetched
+	parsing        int // PRs whose diffs are still being parsed
 	scoring        int // PRs whose assessments are still in progress
 	current        int
 	spinner        spinner.Model
@@ -62,8 +63,9 @@ type Model struct {
 
 	// Post-merge review
 	showAllMerged   bool // when true, show all merged PRs including already-reviewed/reacted
-	openListsDone   int  // count of repos whose open PR list fetch has returned
-	mergedListsDone int  // count of repos whose merged PR list fetch has returned
+	openListsDone    int // count of repos whose open PR list fetch has returned
+	mergedListsDone  int // count of repos whose merged PR list fetch has returned
+	trackedListsDone int // count of repos whose tracked PR list fetch has returned
 
 	// Incremental review
 	reviewStore *reviewstate.Store
@@ -103,7 +105,7 @@ func New(a *app.App) Model {
 func (m Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{m.spinner.Tick, m.convScene.FocusInput()}
 	for _, r := range m.app.Repos {
-		cmds = append(cmds, fetchPRListCmd(r), fetchMergedPRListCmd(r))
+		cmds = append(cmds, fetchPRListCmd(r), fetchMergedPRListCmd(r), fetchTrackedPRListCmd(r, m.reviewStore, nil))
 	}
 	return tea.Batch(cmds...)
 }

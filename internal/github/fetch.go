@@ -330,6 +330,23 @@ func ListMergedPRsMeta(repo, currentUser string, since time.Time) ([]map[string]
 	return filtered, nil
 }
 
+// FetchPRMeta returns lightweight metadata for a single PR by number.
+func FetchPRMeta(repo string, number int) (map[string]any, error) {
+	out, err := exec.Command("gh", "pr", "view",
+		fmt.Sprintf("%d", number),
+		"--repo", repo,
+		"--json", "number,title,author,url,createdAt,additions,deletions,files,body,reviewRequests,headRefOid,headRefName,mergeStateStatus,state",
+	).Output()
+	if err != nil {
+		return nil, fmt.Errorf("gh pr view %d: %w", number, err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(out, &raw); err != nil {
+		return nil, fmt.Errorf("parsing pr view %d: %w", number, err)
+	}
+	return raw, nil
+}
+
 func getDiff(repo string, number int) (string, error) {
 	out, err := exec.Command("gh", "pr", "diff", fmt.Sprintf("%d", number), "--repo", repo).Output()
 	if err != nil {

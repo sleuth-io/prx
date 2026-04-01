@@ -81,6 +81,17 @@ func (s *Store) Get(key string) *PRState {
 	return s.states[key]
 }
 
+// Keys returns all store keys (repo#number format).
+func (s *Store) Keys() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	keys := make([]string, 0, len(s.states))
+	for k := range s.states {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
 // Set stores the review state for a PR and persists to disk.
 func (s *Store) Set(key string, state *PRState) {
 	s.mu.Lock()

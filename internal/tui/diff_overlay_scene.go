@@ -84,6 +84,18 @@ func (s *DiffOverlayScene) handleKey(msg tea.KeyMsg, m *Model) (Scene, tea.Cmd) 
 	switch msg.String() {
 	case "ctrl+q":
 		return s, m.cleanupWorktrees()
+	case "ctrl+n":
+		m.diffView.Focused = false
+		m.navigatePR(1, s.conv)
+		m.diffView.Focused = true
+		s.conv.BuildScrollback(m)
+		return s, nil
+	case "ctrl+p":
+		m.diffView.Focused = false
+		m.navigatePR(-1, s.conv)
+		m.diffView.Focused = true
+		s.conv.BuildScrollback(m)
+		return s, nil
 	case "q", "esc", "ctrl+d":
 		logger.Info("[user] diff overlay: exit (%s)", msg.String())
 		// Snapshot review state on diff exit
@@ -206,7 +218,8 @@ func (s *DiffOverlayScene) renderFooter(m *Model) string {
 	if width == 0 {
 		width = 80
 	}
-	status := fmt.Sprintf("prx  PR %d/%d", m.current+1, len(m.cards))
+	visIdx, visible := m.visiblePosition()
+	status := fmt.Sprintf("prx  PR %d/%d", visIdx, visible)
 	hints := "j/k scroll  [/] file  {/} hunk  ←/→ collapse  </> all  ? ask  c comment  q back"
 	gap := width - lipgloss.Width(status) - lipgloss.Width(hints) - 2
 	if gap < 1 {

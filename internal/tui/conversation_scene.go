@@ -274,14 +274,8 @@ func (s *ConversationScene) renderFooter(m *Model) string {
 	if width == 0 {
 		width = 80
 	}
-	visible := m.visibleCardCount()
-	visIdx := 0
-	for i := 0; i < m.current && i < len(m.cards); i++ {
-		if m.isCardVisible(m.cards[i]) {
-			visIdx++
-		}
-	}
-	status := fmt.Sprintf("prx  PR %d/%d", visIdx+1, visible)
+	visIdx, visible := m.visiblePosition()
+	status := fmt.Sprintf("prx  PR %d/%d", visIdx, visible)
 	if s.actionStatus != "" && s.actionDone {
 		status += fmt.Sprintf("  %s", s.actionStatus)
 	} else if s.actionStatus != "" {
