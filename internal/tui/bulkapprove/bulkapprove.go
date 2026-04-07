@@ -287,7 +287,7 @@ func bulkApproveCmd(currentUser string, items []Item) tea.Cmd {
 			if item.PostMerge {
 				err = github.SetReaction(item.Repo, item.Number, "+1", currentUser)
 			} else {
-				err = github.ApprovePR(item.Repo, item.Number)
+				err = github.ApprovePR(item.Repo, item.Number, "")
 			}
 			results[i] = approveResult{prNumber: item.Number, err: err}
 		}

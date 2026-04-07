@@ -113,9 +113,9 @@ func mergeCmd(repo string, number int, method string) tea.Cmd {
 	}
 }
 
-func approveCmd(repo string, number int) tea.Cmd {
+func approveCmd(repo string, number int, body string) tea.Cmd {
 	return func() tea.Msg {
-		err := github.ApprovePR(repo, number)
+		err := github.ApprovePR(repo, number, body)
 		return actionDoneMsg{repo: repo, pr: number, action: actionApprove, err: err}
 	}
 }

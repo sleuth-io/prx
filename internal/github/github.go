@@ -85,9 +85,13 @@ func PostInlineComment(repo string, number int, commitSHA, path string, line int
 	return cmd.Run()
 }
 
-func ApprovePR(repo string, number int) error {
-	return exec.Command("gh", "pr", "review", fmt.Sprintf("%d", number),
-		"--repo", repo, "--approve").Run()
+func ApprovePR(repo string, number int, body string) error {
+	args := []string{"pr", "review", fmt.Sprintf("%d", number),
+		"--repo", repo, "--approve"}
+	if body != "" {
+		args = append(args, "--body", body)
+	}
+	return exec.Command("gh", args...).Run()
 }
 
 func RequestChanges(repo string, number int, body string) error {

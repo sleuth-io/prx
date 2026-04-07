@@ -208,8 +208,9 @@ func (s *ConversationScene) BuildScrollback(m *Model) {
 		})
 	}
 
-	// 3. Action status
-	if s.actionStatus != "" {
+	// 3. Action status — only while in progress; completion is shown in the
+	// footer status bar only, so it doesn't stick around in the scrollback.
+	if s.actionStatus != "" && !s.actionDone {
 		blocks = append(blocks, &conversation.StatusBlock{
 			Status:      s.actionStatus,
 			Done:        s.actionDone,
@@ -243,7 +244,19 @@ func (s *ConversationScene) BuildScrollback(m *Model) {
 
 func (s *ConversationScene) updateInputHeight() {
 	content := s.input.Value()
-	lines := strings.Count(content, "\n") + 1
+	inputW := s.width - 4
+	if inputW < 1 {
+		inputW = 1
+	}
+	lines := 0
+	for _, line := range strings.Split(content, "\n") {
+		w := lipgloss.Width(line)
+		if w == 0 {
+			lines++
+			continue
+		}
+		lines += (w + inputW - 1) / inputW
+	}
 	if lines < 1 {
 		lines = 1
 	}

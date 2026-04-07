@@ -85,10 +85,16 @@ func commands() []Command {
 					}
 					return s, nil, true
 				}
+				// With args, skip the confirm dialog and approve immediately
+				// with the comment body — mirrors /comment and /reject.
+				if args != "" {
+					s.actionStatus = "Approving…"
+					return s, approveCmd(repo, num, args), true
+				}
 				s.confirm = &confirmDialog{
 					description:  fmt.Sprintf("Approve PR #%d?", num),
 					actionStatus: "Approving…",
-					cmd:          approveCmd(repo, num),
+					cmd:          approveCmd(repo, num, ""),
 				}
 				return s, nil, true
 			},

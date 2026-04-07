@@ -12,10 +12,15 @@ import (
 var toolDefs = []map[string]interface{}{
 	{
 		"name":        "approve_pr",
-		"description": "Approve the pull request",
+		"description": "Approve the pull request, optionally with a review comment",
 		"inputSchema": map[string]interface{}{
-			"type":       "object",
-			"properties": map[string]interface{}{},
+			"type": "object",
+			"properties": map[string]interface{}{
+				"body": map[string]interface{}{
+					"type":        "string",
+					"description": "Optional review body included with the approval",
+				},
+			},
 		},
 	},
 	{
@@ -272,7 +277,8 @@ func (s *Server) toolDescription(name string, args map[string]interface{}) strin
 func (s *Server) executeAction(name string, args map[string]interface{}) (string, error) {
 	switch name {
 	case "approve_pr":
-		if err := github.ApprovePR(s.repo, s.prNumber); err != nil {
+		body, _ := args["body"].(string)
+		if err := github.ApprovePR(s.repo, s.prNumber, body); err != nil {
 			return "", err
 		}
 		return "PR approved successfully", nil
