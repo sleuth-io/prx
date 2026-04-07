@@ -604,7 +604,7 @@ func (d *DiffView) ScrollToHunk(file string, startLine int) {
 	for _, c := range d.collapsibles {
 		if c.kind == kindHunk && c.fileIdx == fileIdx && c.hunkIdx == hunkIdx {
 			d.cursorLine = c.lineIdx
-			idealOffset := d.cursorLine - d.viewport.Height/2
+			idealOffset := d.cursorLine - d.viewport.Height/4
 			if idealOffset < 0 {
 				idealOffset = 0
 			}
@@ -624,7 +624,7 @@ func (d *DiffView) MoveCursor(delta int) {
 		d.cursorLine = len(d.lines) - 1
 	}
 
-	idealOffset := d.cursorLine - d.viewport.Height/2
+	idealOffset := d.cursorLine - d.viewport.Height/4
 	if idealOffset < 0 {
 		idealOffset = 0
 	}

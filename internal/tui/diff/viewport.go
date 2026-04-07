@@ -19,7 +19,7 @@ var (
 func (d *DiffView) rebuildAndStay(c *collapsible) {
 	d.rebuildViewport()
 	d.cursorLine = d.collapsibleLineIdx(c)
-	idealOffset := d.cursorLine - d.viewport.Height/2
+	idealOffset := d.cursorLine - d.viewport.Height/4
 	if idealOffset < 0 {
 		idealOffset = 0
 	}
