@@ -17,7 +17,7 @@ func ListOpenPRsMeta(repo string) ([]map[string]any, error) {
 	out, err := exec.Command("gh", "pr", "list",
 		"--repo", repo,
 		"--state", "open",
-		"--json", "number,title,author,url,createdAt,additions,deletions,files,body,reviewRequests,headRefOid,headRefName,mergeStateStatus",
+		"--json", "number,title,author,url,createdAt,additions,deletions,files,body,reviewRequests,headRefOid,headRefName,mergeStateStatus,commits",
 		"--limit", "50",
 	).Output()
 	if err != nil {
@@ -133,6 +133,7 @@ func FetchPRDetails(repo string, raw map[string]any) (*PR, error) {
 		Body:               body,
 		HeadSHA:            fmt.Sprintf("%v", raw["headRefOid"]),
 		HeadRefName:        fmt.Sprintf("%v", raw["headRefName"]),
+		LatestCommitAuthor: latestCommitAuthorFromRaw(raw),
 		State:              state,
 		MergeStateStatus:   mergeStateStatus,
 		Checks:             checks,
@@ -307,7 +308,7 @@ func ListMergedPRsMeta(repo, currentUser string, since time.Time) ([]map[string]
 		"--repo", repo,
 		"--state", "merged",
 		"--search", fmt.Sprintf("merged:>%s", sinceStr),
-		"--json", "number,title,author,url,createdAt,additions,deletions,files,body,reviewRequests,headRefOid,headRefName,mergeStateStatus,state",
+		"--json", "number,title,author,url,createdAt,additions,deletions,files,body,reviewRequests,headRefOid,headRefName,mergeStateStatus,state,commits",
 		"--limit", "50",
 	).Output()
 	if err != nil {
@@ -335,7 +336,7 @@ func FetchPRMeta(repo string, number int) (map[string]any, error) {
 	out, err := exec.Command("gh", "pr", "view",
 		fmt.Sprintf("%d", number),
 		"--repo", repo,
-		"--json", "number,title,author,url,createdAt,additions,deletions,files,body,reviewRequests,headRefOid,headRefName,mergeStateStatus,state",
+		"--json", "number,title,author,url,createdAt,additions,deletions,files,body,reviewRequests,headRefOid,headRefName,mergeStateStatus,state,commits",
 	).Output()
 	if err != nil {
 		return nil, fmt.Errorf("gh pr view %d: %w", number, err)
@@ -345,6 +346,32 @@ func FetchPRMeta(repo string, number int) (map[string]any, error) {
 		return nil, fmt.Errorf("parsing pr view %d: %w", number, err)
 	}
 	return raw, nil
+}
+
+// latestCommitAuthorFromRaw extracts the login of the most recent commit author
+// from a raw PR JSON object containing a "commits" field. Returns "" if absent.
+// gh returns commits ordered oldest-first, so the last entry is the most recent.
+func latestCommitAuthorFromRaw(raw map[string]any) string {
+	commits, ok := raw["commits"].([]any)
+	if !ok || len(commits) == 0 {
+		return ""
+	}
+	last, ok := commits[len(commits)-1].(map[string]any)
+	if !ok {
+		return ""
+	}
+	authors, ok := last["authors"].([]any)
+	if !ok || len(authors) == 0 {
+		return ""
+	}
+	first, ok := authors[0].(map[string]any)
+	if !ok {
+		return ""
+	}
+	if login, ok := first["login"].(string); ok {
+		return login
+	}
+	return ""
 }
 
 func getDiff(repo string, number int) (string, error) {
