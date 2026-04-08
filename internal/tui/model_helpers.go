@@ -239,7 +239,13 @@ func (m *Model) computeHasNewContent(card *PRCard) {
 	fileNames, fileHunks := diff.FileHunkInfo(card.parsedFiles)
 	commentDigests := diff.CommentDigestsFromPR(card.PR, m.app.CurrentUser)
 	inc := reviewstate.ComputeIncremental(fileNames, fileHunks, commentDigests, state)
-	card.HasNewContent = inc.HasChanges || inc.HasNewComments
+	hasChanges := inc.HasChanges
+	if hasChanges && card.PR.LatestCommitAuthor == m.app.CurrentUser {
+		// The diff changed since last snapshot but the most recent commit is
+		// ours — don't resurface PRs because of our own pushes.
+		hasChanges = false
+	}
+	card.HasNewContent = hasChanges || inc.HasNewComments
 }
 
 // updateIncrementalState computes incremental review state and stores it on the
@@ -261,6 +267,17 @@ func (m *Model) updateIncrementalState(card *PRCard) {
 	fileNames, fileHunks := diff.FileHunkInfo(card.parsedFiles)
 	commentDigests := diff.CommentDigestsFromPR(card.PR, m.app.CurrentUser)
 	state := reviewstate.ComputeIncremental(fileNames, fileHunks, commentDigests, card.ReviewState)
+	if state.HasChanges && card.PR.LatestCommitAuthor == m.app.CurrentUser {
+		// Latest commit is ours — treat all new hunks as already-seen so we
+		// don't get nagged about our own pushes (visibility & diff badges).
+		for _, fileHunks := range state.HunkStatus {
+			for hi := range fileHunks {
+				fileHunks[hi] = reviewstate.StatusSeen
+			}
+		}
+		state.NewHunkCount = 0
+		state.HasChanges = false
+	}
 	card.HasNewContent = state.HasChanges || state.HasNewComments
 	logger.Info("incremental state for PR #%d: %d new hunks, %d new comments, %d edited, mode=%v",
 		card.PR.Number, state.NewHunkCount, state.NewCommentCount, state.EditedCommentCount,
