@@ -265,6 +265,15 @@ func (s *ConversationScene) updateInputHeight() {
 	}
 	if lines != s.input.Height() {
 		s.input.SetHeight(lines)
+		// Bubbles textarea scrolls its internal viewport to keep the cursor
+		// visible — when typing wraps onto a new visual line with height=1,
+		// it scrolls down by one, hiding the previous line. Growing the
+		// height alone doesn't unhide it because the viewport YOffset is
+		// untouched. SetValue calls Reset internally which calls
+		// viewport.GotoTop(), then re-inserts the value (cursor lands at
+		// end, matching the typical typing case).
+		val := s.input.Value()
+		s.input.SetValue(val)
 		s.Resize(s.width, s.height)
 	}
 }
