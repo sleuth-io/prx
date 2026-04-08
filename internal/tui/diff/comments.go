@@ -25,21 +25,21 @@ func (d *DiffView) AddPendingComment(c github.ReviewComment) *CommentItem {
 			if g.Author == c.Author {
 				g.Comments = append(g.Comments, item)
 				g.Collapsed = false
-				d.rebuildViewport()
+				d.rebuildPreservingPosition()
 				return item
 			}
 		}
 		g := &CommentGroup{Author: c.Author, Collapsed: false, Comments: []*CommentItem{item}}
 		d.commentGroups = append(d.commentGroups, g)
 	}
-	d.rebuildViewport()
+	d.rebuildPreservingPosition()
 	return item
 }
 
 // ConfirmComment clears the pending flag on a comment item.
 func (d *DiffView) ConfirmComment(item *CommentItem) {
 	item.Pending = false
-	d.rebuildViewport()
+	d.rebuildPreservingPosition()
 }
 
 // RemoveComment removes a pending comment (on API error).
@@ -48,7 +48,7 @@ func (d *DiffView) RemoveComment(item *CommentItem) {
 		for i, c := range g.Comments {
 			if c == item {
 				g.Comments = append(g.Comments[:i], g.Comments[i+1:]...)
-				d.rebuildViewport()
+				d.rebuildPreservingPosition()
 				return
 			}
 		}
@@ -56,7 +56,7 @@ func (d *DiffView) RemoveComment(item *CommentItem) {
 	for i, c := range d.inline {
 		if c == item {
 			d.inline = append(d.inline[:i], d.inline[i+1:]...)
-			d.rebuildViewport()
+			d.rebuildPreservingPosition()
 			return
 		}
 	}

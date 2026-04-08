@@ -27,6 +27,34 @@ func (d *DiffView) rebuildAndStay(c *collapsible) {
 	d.syncViewport()
 }
 
+// rebuildPreservingPosition rebuilds the viewport while keeping the cursor and
+// scroll offset visually anchored to whatever collapsible the cursor was in.
+// Use this when content is inserted/removed (e.g. comments added) so the user
+// doesn't get kicked to the top of the diff.
+func (d *DiffView) rebuildPreservingPosition() {
+	anchor := d.collapsibleAtOffset()
+	if anchor == nil {
+		d.rebuildViewport()
+		return
+	}
+	oldAnchorLine := anchor.lineIdx
+	cursorDelta := d.cursorLine - oldAnchorLine
+	offsetDelta := d.viewport.YOffset - oldAnchorLine
+
+	d.rebuildViewport()
+
+	newAnchorLine := d.collapsibleLineIdx(anchor)
+	d.cursorLine = newAnchorLine + cursorDelta
+	if d.cursorLine < 0 {
+		d.cursorLine = 0
+	}
+	if d.cursorLine >= len(d.lines) {
+		d.cursorLine = len(d.lines) - 1
+	}
+	d.viewport.SetYOffset(newAnchorLine + offsetDelta)
+	d.syncViewport()
+}
+
 func (d *DiffView) collapsibleAtOffset() *collapsible {
 	var best *collapsible
 	for i := range d.collapsibles {
