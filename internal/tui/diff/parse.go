@@ -222,7 +222,10 @@ func syntaxHighlight(code string, lexer chroma.Lexer) string {
 	if err := formatter.Format(&sb, style, iterator); err != nil {
 		return code
 	}
-	return sb.String()
+	// chroma's terminal256 formatter may emit a trailing newline; strip it so
+	// rendered diff lines are single-line strings (otherwise downstream
+	// strings.Join+Split adds phantom empty lines and breaks viewport layout).
+	return strings.TrimRight(sb.String(), "\n")
 }
 
 func detectLexer(newName, oldName string) chroma.Lexer {
