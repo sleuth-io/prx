@@ -14,12 +14,12 @@ import (
 // ListOpenPRsMeta returns lightweight PR metadata (no diffs) — fast single API call.
 func ListOpenPRsMeta(repo string) ([]map[string]any, error) {
 	logger.Info("listing open PRs for %s", repo)
-	out, err := exec.Command("gh", "pr", "list",
+	out, err := ghOutput(exec.Command("gh", "pr", "list",
 		"--repo", repo,
 		"--state", "open",
-		"--json", "number,title,author,url,createdAt,additions,deletions,files,body,reviewRequests,headRefOid,headRefName,mergeStateStatus,commits",
+		"--json", "number,title,author,url,createdAt,additions,deletions,files,body,reviewRequests,headRefOid,headRefName,mergeStateStatus",
 		"--limit", "50",
-	).Output()
+	))
 	if err != nil {
 		return nil, fmt.Errorf("gh pr list: %w", err)
 	}
@@ -133,8 +133,7 @@ func FetchPRDetails(repo string, raw map[string]any) (*PR, error) {
 		Body:               body,
 		HeadSHA:            fmt.Sprintf("%v", raw["headRefOid"]),
 		HeadRefName:        fmt.Sprintf("%v", raw["headRefName"]),
-		LatestCommitAuthor: latestCommitAuthorFromRaw(raw),
-		State:              state,
+		State:            state,
 		MergeStateStatus:   mergeStateStatus,
 		Checks:             checks,
 		Reviews:            reviews,
@@ -163,8 +162,8 @@ func FetchPRActivity(repo string, number int) (*PRActivity, error) {
 	var state, mergeStateStatus string
 	go func() {
 		defer wg.Done()
-		out, err := exec.Command("gh", "pr", "view", fmt.Sprintf("%d", number),
-			"--repo", repo, "--json", "title,body,headRefOid,headRefName,state,mergeStateStatus").Output()
+		out, err := ghOutput(exec.Command("gh", "pr", "view", fmt.Sprintf("%d", number),
+			"--repo", repo, "--json", "title,body,headRefOid,headRefName,state,mergeStateStatus"))
 		if err != nil {
 			logger.Error("PR #%d: pr view meta: %v", number, err)
 			return
@@ -304,13 +303,13 @@ func FetchPRFull(repo string, existing *PR) (*PR, error) {
 func ListMergedPRsMeta(repo, currentUser string, since time.Time) ([]map[string]any, error) {
 	sinceStr := since.Format("2006-01-02")
 	logger.Info("listing merged PRs for %s since %s", repo, sinceStr)
-	out, err := exec.Command("gh", "pr", "list",
+	out, err := ghOutput(exec.Command("gh", "pr", "list",
 		"--repo", repo,
 		"--state", "merged",
-		"--search", fmt.Sprintf("merged:>%s", sinceStr),
-		"--json", "number,title,author,url,createdAt,additions,deletions,files,body,reviewRequests,headRefOid,headRefName,mergeStateStatus,state,commits",
+		"--search", fmt.Sprintf("repo:%s merged:>%s", repo, sinceStr),
+		"--json", "number,title,author,url,createdAt,additions,deletions,files,body,reviewRequests,headRefOid,headRefName,mergeStateStatus,state",
 		"--limit", "50",
-	).Output()
+	))
 	if err != nil {
 		return nil, fmt.Errorf("gh pr list (merged): %w", err)
 	}
@@ -333,11 +332,11 @@ func ListMergedPRsMeta(repo, currentUser string, since time.Time) ([]map[string]
 
 // FetchPRMeta returns lightweight metadata for a single PR by number.
 func FetchPRMeta(repo string, number int) (map[string]any, error) {
-	out, err := exec.Command("gh", "pr", "view",
+	out, err := ghOutput(exec.Command("gh", "pr", "view",
 		fmt.Sprintf("%d", number),
 		"--repo", repo,
-		"--json", "number,title,author,url,createdAt,additions,deletions,files,body,reviewRequests,headRefOid,headRefName,mergeStateStatus,state,commits",
-	).Output()
+		"--json", "number,title,author,url,createdAt,additions,deletions,files,body,reviewRequests,headRefOid,headRefName,mergeStateStatus,state",
+	))
 	if err != nil {
 		return nil, fmt.Errorf("gh pr view %d: %w", number, err)
 	}
@@ -348,34 +347,10 @@ func FetchPRMeta(repo string, number int) (map[string]any, error) {
 	return raw, nil
 }
 
-// latestCommitAuthorFromRaw extracts the login of the most recent commit author
-// from a raw PR JSON object containing a "commits" field. Returns "" if absent.
-// gh returns commits ordered oldest-first, so the last entry is the most recent.
-func latestCommitAuthorFromRaw(raw map[string]any) string {
-	commits, ok := raw["commits"].([]any)
-	if !ok || len(commits) == 0 {
-		return ""
-	}
-	last, ok := commits[len(commits)-1].(map[string]any)
-	if !ok {
-		return ""
-	}
-	authors, ok := last["authors"].([]any)
-	if !ok || len(authors) == 0 {
-		return ""
-	}
-	first, ok := authors[0].(map[string]any)
-	if !ok {
-		return ""
-	}
-	if login, ok := first["login"].(string); ok {
-		return login
-	}
-	return ""
-}
+
 
 func getDiff(repo string, number int) (string, error) {
-	out, err := exec.Command("gh", "pr", "diff", fmt.Sprintf("%d", number), "--repo", repo).Output()
+	out, err := ghOutput(exec.Command("gh", "pr", "diff", fmt.Sprintf("%d", number), "--repo", repo))
 	if err != nil {
 		return "", fmt.Errorf("gh pr diff: %w", err)
 	}
@@ -383,8 +358,8 @@ func getDiff(repo string, number int) (string, error) {
 }
 
 func getChecks(repo string, number int) ([]CheckStatus, error) {
-	out, err := exec.Command("gh", "pr", "checks", fmt.Sprintf("%d", number),
-		"--repo", repo, "--json", "name,state").Output()
+	out, err := ghOutput(exec.Command("gh", "pr", "checks", fmt.Sprintf("%d", number),
+		"--repo", repo, "--json", "name,state"))
 	if err != nil || len(strings.TrimSpace(string(out))) == 0 {
 		return nil, nil
 	}
@@ -404,10 +379,10 @@ func getChecks(repo string, number int) ([]CheckStatus, error) {
 }
 
 func getReviews(repo string, number int) ([]ReviewComment, error) {
-	out, err := exec.Command("gh", "api",
+	out, err := ghOutput(exec.Command("gh", "api",
 		fmt.Sprintf("repos/%s/pulls/%d/reviews", repo, number),
 		"--jq", `[.[] | {author: .user.login, body: .body, state: .state, submitted_at: .submitted_at}]`,
-	).Output()
+	))
 	if err != nil || len(strings.TrimSpace(string(out))) == 0 {
 		return nil, nil
 	}
@@ -438,11 +413,11 @@ func getReviews(repo string, number int) ([]ReviewComment, error) {
 }
 
 func getComments(repo string, number int) ([]ReviewComment, error) {
-	out, err := exec.Command("gh", "api",
+	out, err := ghOutput(exec.Command("gh", "api",
 		fmt.Sprintf("repos/%s/issues/%d/comments", repo, number),
 		"--paginate",
 		"--jq", `.[] | {id: .id, author: .user.login, body: .body, submitted_at: .created_at}`,
-	).Output()
+	))
 	if err != nil || len(strings.TrimSpace(string(out))) == 0 {
 		return nil, nil
 	}
@@ -475,11 +450,11 @@ func getComments(repo string, number int) ([]ReviewComment, error) {
 }
 
 func getInlineComments(repo string, number int) ([]ReviewComment, error) {
-	out, err := exec.Command("gh", "api",
+	out, err := ghOutput(exec.Command("gh", "api",
 		fmt.Sprintf("repos/%s/pulls/%d/comments", repo, number),
 		"--paginate",
 		"--jq", `.[] | {id: .id, in_reply_to_id: (.in_reply_to_id // 0), author: .user.login, body: .body, path: .path, line: (.line // .original_line // 0), submitted_at: .created_at}`,
-	).Output()
+	))
 	if err != nil || len(strings.TrimSpace(string(out))) == 0 {
 		return nil, nil
 	}

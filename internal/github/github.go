@@ -8,8 +8,22 @@ import (
 	"sync"
 )
 
+// ghOutput runs an exec.Cmd and returns its stdout. On failure, it extracts
+// stderr from the ExitError so callers get a useful message instead of just
+// "exit status 1".
+func ghOutput(cmd *exec.Cmd) ([]byte, error) {
+	out, err := cmd.Output()
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok && len(ee.Stderr) > 0 {
+			return nil, fmt.Errorf("%s: %s", cmd.Args[0], strings.TrimSpace(string(ee.Stderr)))
+		}
+		return nil, err
+	}
+	return out, nil
+}
+
 func CurrentUser() (string, error) {
-	out, err := exec.Command("gh", "api", "user", "--jq", ".login").Output()
+	out, err := ghOutput(exec.Command("gh", "api", "user", "--jq", ".login"))
 	if err != nil {
 		return "", fmt.Errorf("gh api user: %w", err)
 	}
@@ -26,7 +40,7 @@ func DetectRepo(dir string) (string, error) {
 
 	cmd := exec.Command("git", "remote", "get-url", "origin")
 	cmd.Dir = dir
-	out, err := cmd.Output()
+	out, err := ghOutput(cmd)
 	if err != nil {
 		return "", fmt.Errorf("no 'origin' remote found — prx requires a GitHub remote")
 	}
@@ -101,10 +115,10 @@ func RequestChanges(repo string, number int, body string) error {
 
 // GetReactions returns all reactions on a PR (GitHub treats PRs as issues for reactions).
 func GetReactions(repo string, number int) ([]Reaction, error) {
-	out, err := exec.Command("gh", "api",
+	out, err := ghOutput(exec.Command("gh", "api",
 		fmt.Sprintf("repos/%s/issues/%d/reactions", repo, number),
 		"--jq", `[.[] | {id: .id, user: .user.login, content: .content}]`,
-	).Output()
+	))
 	if err != nil || len(strings.TrimSpace(string(out))) == 0 {
 		return nil, nil
 	}
