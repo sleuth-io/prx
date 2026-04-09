@@ -16,10 +16,22 @@ var (
 	diffLineNumStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 )
 
+// vpLine converts a d.lines index to the corresponding viewport line index.
+// d.lines entries may contain embedded newlines (e.g. from lipgloss Width
+// wrapping), so one d.lines entry can span multiple viewport lines.  This
+// helper accounts for that so callers never assume a 1:1 mapping.
+func (d *DiffView) vpLine(idx int) int {
+	n := 0
+	for i := 0; i < idx && i < len(d.lines); i++ {
+		n += 1 + strings.Count(d.lines[i], "\n")
+	}
+	return n
+}
+
 func (d *DiffView) rebuildAndStay(c *collapsible) {
 	d.rebuildViewport()
 	d.cursorLine = d.collapsibleLineIdx(c)
-	idealOffset := d.cursorLine - d.viewport.Height/4
+	idealOffset := d.vpLine(d.cursorLine) - d.viewport.Height/4
 	if idealOffset < 0 {
 		idealOffset = 0
 	}
@@ -39,7 +51,8 @@ func (d *DiffView) rebuildPreservingPosition() {
 	}
 	oldAnchorLine := anchor.lineIdx
 	cursorDelta := d.cursorLine - oldAnchorLine
-	offsetDelta := d.viewport.YOffset - oldAnchorLine
+	oldAnchorVP := d.vpLine(oldAnchorLine)
+	offsetDelta := d.viewport.YOffset - oldAnchorVP
 
 	d.rebuildViewport()
 
@@ -51,7 +64,7 @@ func (d *DiffView) rebuildPreservingPosition() {
 	if d.cursorLine >= len(d.lines) {
 		d.cursorLine = len(d.lines) - 1
 	}
-	d.viewport.SetYOffset(newAnchorLine + offsetDelta)
+	d.viewport.SetYOffset(d.vpLine(newAnchorLine) + offsetDelta)
 	d.syncViewport()
 }
 

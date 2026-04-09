@@ -604,7 +604,7 @@ func (d *DiffView) ScrollToHunk(file string, startLine int) {
 	for _, c := range d.collapsibles {
 		if c.kind == kindHunk && c.fileIdx == fileIdx && c.hunkIdx == hunkIdx {
 			d.cursorLine = c.lineIdx
-			idealOffset := d.cursorLine - d.viewport.Height/4
+			idealOffset := d.vpLine(d.cursorLine) - d.viewport.Height/4
 			if idealOffset < 0 {
 				idealOffset = 0
 			}
@@ -624,7 +624,7 @@ func (d *DiffView) MoveCursor(delta int) {
 		d.cursorLine = len(d.lines) - 1
 	}
 
-	idealOffset := d.cursorLine - d.viewport.Height/4
+	idealOffset := d.vpLine(d.cursorLine) - d.viewport.Height/4
 	if idealOffset < 0 {
 		idealOffset = 0
 	}
@@ -712,7 +712,7 @@ func (d DiffView) ViewWithModal(modal string) string {
 	modalLines := strings.Split(modal, "\n")
 	modalH := len(modalLines)
 
-	cursorInView := d.cursorLine - d.viewport.YOffset
+	cursorInView := d.vpLine(d.cursorLine) - d.viewport.YOffset
 	if cursorInView < 0 {
 		cursorInView = 0
 	}
