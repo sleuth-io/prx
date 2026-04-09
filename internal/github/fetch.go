@@ -133,7 +133,7 @@ func FetchPRDetails(repo string, raw map[string]any) (*PR, error) {
 		Body:               body,
 		HeadSHA:            fmt.Sprintf("%v", raw["headRefOid"]),
 		HeadRefName:        fmt.Sprintf("%v", raw["headRefName"]),
-		State:            state,
+		State:              state,
 		MergeStateStatus:   mergeStateStatus,
 		Checks:             checks,
 		Reviews:            reviews,
@@ -346,8 +346,6 @@ func FetchPRMeta(repo string, number int) (map[string]any, error) {
 	}
 	return raw, nil
 }
-
-
 
 func getDiff(repo string, number int) (string, error) {
 	out, err := ghOutput(exec.Command("gh", "pr", "diff", fmt.Sprintf("%d", number), "--repo", repo))

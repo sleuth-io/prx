@@ -41,7 +41,7 @@ type PR struct {
 	Body               string
 	HeadSHA            string
 	HeadRefName        string
-	State            string // "OPEN", "MERGED", or "CLOSED"
+	State              string // "OPEN", "MERGED", or "CLOSED"
 	MergeStateStatus   string // "CLEAN", "BLOCKED", "DIRTY", "BEHIND", "UNSTABLE", "UNKNOWN", etc.
 	Checks             []CheckStatus
 	Reviews            []ReviewComment // PR-level review submissions (APPROVED, CHANGES_REQUESTED, etc.)
