@@ -41,8 +41,7 @@ type PR struct {
 	Body               string
 	HeadSHA            string
 	HeadRefName        string
-	LatestCommitAuthor string // login of the author of the most recent commit on the head ref
-	State              string // "OPEN", "MERGED", or "CLOSED"
+	State            string // "OPEN", "MERGED", or "CLOSED"
 	MergeStateStatus   string // "CLEAN", "BLOCKED", "DIRTY", "BEHIND", "UNSTABLE", "UNKNOWN", etc.
 	Checks             []CheckStatus
 	Reviews            []ReviewComment // PR-level review submissions (APPROVED, CHANGES_REQUESTED, etc.)
