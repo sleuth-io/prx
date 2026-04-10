@@ -85,16 +85,10 @@ func commands() []Command {
 					}
 					return s, nil, true
 				}
-				// With args, skip the confirm dialog and approve immediately
-				// with the comment body — mirrors /comment and /reject.
-				if args != "" {
-					s.actionStatus = "Approving…"
-					return s, approveCmd(repo, num, args), true
-				}
 				s.confirm = &confirmDialog{
 					description:  fmt.Sprintf("Approve PR #%d?", num),
 					actionStatus: "Approving…",
-					cmd:          approveCmd(repo, num, ""),
+					cmd:          approveCmd(repo, num, args),
 				}
 				return s, nil, true
 			},
@@ -292,13 +286,18 @@ func commandMap() (slashMap map[string]*Command, keyMap map[string]*Command) {
 }
 
 // runCommentOrReject handles the shared logic for /comment and /reject.
-// With args: posts immediately. Without args: opens the diff overlay comment modal.
+// With args: /comment posts immediately; /reject opens a confirm dialog.
+// Without args: opens the diff overlay comment modal.
 func runCommentOrReject(s *ConversationScene, m *Model, card *PRCard, args string, requestChanges bool) (Scene, tea.Cmd, bool) {
 	repo, num := card.Ctx.Repo, card.PR.Number
 	if args != "" {
 		if requestChanges {
-			s.actionStatus = "Requesting changes…"
-			return s, requestChangesCmd(repo, num, args), true
+			s.confirm = &confirmDialog{
+				description:  fmt.Sprintf("Request changes on PR #%d?", num),
+				actionStatus: "Requesting changes…",
+				cmd:          requestChangesCmd(repo, num, args),
+			}
+			return s, nil, true
 		}
 		s.actionStatus = "Posting comment…"
 		return s, postGlobalCommentCmd(repo, num, args, nil), true
