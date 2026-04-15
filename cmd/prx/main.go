@@ -65,8 +65,14 @@ func main() {
 				return err
 			}
 
+			// Hand tea a duped stdout and point FD 1 at /dev/null so the
+			// background autoupdater (which writes directly to FD 1) can't
+			// clobber tea's terminal-control sequences and leave the terminal
+			// in alt-screen mode after exit.
+			teaOut := autoupdate.RedirectStdoutToDevNull()
+
 			m := tui.New(a)
-			p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+			p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithOutput(teaOut))
 			go func() {
 				p.Send(tui.SetProgramMsg{Program: p})
 			}()
