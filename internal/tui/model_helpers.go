@@ -55,6 +55,13 @@ func (m *Model) tryStartupTransition() {
 		}
 	}
 	if !hasVisible {
+		// Don't transition to bulk approve until every repo's list fetches have
+		// returned — otherwise a fast-returning repo with no visible cards can
+		// trigger the bulk/fireworks scene before slower repos' cards arrive.
+		nRepos := len(m.app.Repos)
+		if m.openListsDone < nRepos || m.mergedListsDone < nRepos || m.trackedListsDone < nRepos {
+			return
+		}
 		if len(m.cards) > 0 {
 			// Cards exist but all are reviewed — show bulk approve (fireworks).
 			logger.Info("tryStartupTransition: %d cards but none visible, entering bulk approve", len(m.cards))
@@ -110,6 +117,10 @@ func (m Model) isCardVisible(card *PRCard) bool {
 	}
 	if card.HasNewContent {
 		return true // new comments since last review — keep visible
+	}
+	// Closed-without-merge PRs have nothing actionable; only surface on new activity.
+	if card.PR != nil && card.PR.State == "CLOSED" {
+		return false
 	}
 	return !card.UserHasReviewed && !card.UserHasReacted
 }
