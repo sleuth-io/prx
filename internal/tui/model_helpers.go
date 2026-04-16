@@ -41,10 +41,10 @@ func (m Model) currentCard() *PRCard {
 }
 
 // tryStartupTransition checks if we can exit the startup screen.
-// Called when a merged PR status arrives and no scoring was triggered.
-func (m *Model) tryStartupTransition() {
+// Returns tea.ClearScreen when transitioning to flush residual startup content.
+func (m *Model) tryStartupTransition() tea.Cmd {
 	if m.startupDone || m.fetching > 0 || m.parsing > 0 {
-		return
+		return nil
 	}
 	// Check if any visible card exists (scored or not — unscored merged PRs are still viewable).
 	hasVisible := false
@@ -60,7 +60,7 @@ func (m *Model) tryStartupTransition() {
 		// trigger the bulk/fireworks scene before slower repos' cards arrive.
 		nRepos := len(m.app.Repos)
 		if m.openListsDone < nRepos || m.mergedListsDone < nRepos || m.trackedListsDone < nRepos {
-			return
+			return nil
 		}
 		if len(m.cards) > 0 {
 			// Cards exist but all are reviewed — show bulk approve (fireworks).
@@ -69,10 +69,10 @@ func (m *Model) tryStartupTransition() {
 			m.startupDone = true
 			m.resizeLayout()
 			m.tryEnterBulkApprove()
-			return
+			return tea.ClearScreen
 		}
 		m.checkNoPRs()
-		return
+		return nil
 	}
 	// If there's at least one visible card and nothing is being fetched, transition.
 	// Scoring may still be in progress but the user can start browsing.
@@ -82,6 +82,7 @@ func (m *Model) tryStartupTransition() {
 	m.skipToVisibleCard()
 	m.loadCurrentDiff()
 	m.resizeLayout()
+	return tea.ClearScreen
 }
 
 // checkNoPRs sets noPRs=true only when all repo lists have returned and there are no cards or fetches pending.
