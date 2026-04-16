@@ -311,8 +311,7 @@ func (m *Model) handleMergedPRStatus(msg mergedPRStatusMsg) (Model, tea.Cmd) {
 	}
 	// If all visible merged PRs are already reviewed and nothing is scoring,
 	// we may need to transition out of startup.
-	m.tryStartupTransition()
-	return *m, nil
+	return *m, m.tryStartupTransition()
 }
 
 // markPostMergeReacted marks a post-merge card as reacted and navigates away if hidden.
@@ -357,10 +356,11 @@ func (m *Model) handlePRDetails(msg prDetailsFetchedMsg) (Model, tea.Cmd) {
 	ctx := msg.ctx
 	// Dedup: another list handler may have already created this card.
 	if m.findCard(ctx.Repo, pr.Number) != nil {
+		var clearCmd tea.Cmd
 		if m.fetching == 0 {
-			m.tryStartupTransition()
+			clearCmd = m.tryStartupTransition()
 		}
-		return *m, nil
+		return *m, clearCmd
 	}
 	if !m.startupDone {
 		fetched := m.total - m.fetching
@@ -388,7 +388,9 @@ func (m *Model) handlePRDetails(msg prDetailsFetchedMsg) (Model, tea.Cmd) {
 		cmds := []tea.Cmd{parseDiffCmd(ctx.Repo, pr), fetchMergedPRStatusCmd(ctx.Repo, pr.Number, m.app.CurrentUser)}
 		cmds = append(cmds, m.fetchBodyImages(pr, ctx.Repo)...)
 		if m.fetching == 0 {
-			m.tryStartupTransition()
+			if cmd := m.tryStartupTransition(); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 		}
 		return *m, tea.Batch(cmds...)
 	}
@@ -404,7 +406,9 @@ func (m *Model) handlePRDetails(msg prDetailsFetchedMsg) (Model, tea.Cmd) {
 	// When all details are fetched, check if we can transition — earlier
 	// cached scores may have been blocked waiting for fetching to finish.
 	if m.fetching == 0 {
-		m.tryStartupTransition()
+		if cmd := m.tryStartupTransition(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 	}
 
 	return *m, tea.Batch(cmds...)
@@ -421,10 +425,11 @@ func (m *Model) handleDiffParsed(msg prDiffParsedMsg) (Model, tea.Cmd) {
 	if card := m.currentCard(); card != nil && card.Ctx.Repo == msg.repo && card.PR.Number == msg.prNumber {
 		m.loadCurrentDiff()
 	}
+	var clearCmd tea.Cmd
 	if !m.startupDone && m.parsing == 0 {
-		m.tryStartupTransition()
+		clearCmd = m.tryStartupTransition()
 	}
-	return *m, nil
+	return *m, clearCmd
 }
 
 func (m *Model) handleScoringToolCall(msg scoringToolCallMsg) (Model, tea.Cmd) {
@@ -477,6 +482,7 @@ func (m *Model) handlePRScored(msg prScoredMsg) (Model, tea.Cmd) {
 	// Transition from startup screen once the card list is stable (all details
 	// fetched) and at least one visible PR is scored. Waiting for fetching==0
 	// ensures no more card inserts will shift m.current and cause flashing.
+	var clearCmd tea.Cmd
 	if !m.startupDone && scoredCard != nil && m.fetching == 0 && m.parsing == 0 {
 		// Count truly visible cards: post-merge cards must have their status checked.
 		settled := true
@@ -506,6 +512,7 @@ func (m *Model) handlePRScored(msg prScoredMsg) (Model, tea.Cmd) {
 			m.logDone()
 			m.startupDone = true
 			m.resizeLayout()
+			clearCmd = tea.ClearScreen
 			if visibleSettled == 0 {
 				logger.Info("startup: no visible cards, entering bulk approve")
 				m.tryEnterBulkApprove()
@@ -525,7 +532,7 @@ func (m *Model) handlePRScored(msg prScoredMsg) (Model, tea.Cmd) {
 		m.tryPreWarm(card)
 	}
 	m.refreshBulkApproveIfActive()
-	return *m, nil
+	return *m, clearCmd
 }
 
 func (m *Model) handlePRRefreshed(msg prRefreshedMsg) (Model, tea.Cmd) {
